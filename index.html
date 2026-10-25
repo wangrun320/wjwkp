@@ -1689,20 +1689,34 @@ else if(r<0.94){
     else{const w=40,by=GROUND_Y-110;o={type:'drone',x:W+60,baseY:by,y:by-w/2,w,h:w,bobT:sRand()*6.28,bobA:sRand(4,8)};}
   }
   for(let i=0;i<coins.length;i++){const c=coins[i];if(o.x<c.x+36&&o.x+o.w>c.x-36){o.x=c.x+46;break;}}
+  // === 防连体婴保护：确保和前一个障碍物有安全距离 ===
+if (obstacles.length > 0) {
+  const lastO = obstacles[obstacles.length - 1];
+  // 基础安全距离（随速度动态增加，但设个上限）
+  const minGap = 120 + Math.min(80, G.speed * 0.15); 
+  if (o.x < lastO.x + lastO.w + minGap) {
+    // 稍微推开一点，但不能推得太离谱，否则会卡在屏幕外
+    const randomExtra = rand(10, 60);
+    o.x = lastO.x + lastO.w + minGap + randomExtra; 
+  }
+}
+// ==============================================
   obstacles.push(o);
   G.nextSpawn=G.speed*(1.6+sRand()*0.9)*(map.spawnMul||1);
 }
 function spawnCoins(){
   const map=getMap();
   const cr=map.coinRate||1;
-  const bn=5+Math.floor(sRand()*5); // 基础生成 5~9 个
-const n=Math.max(3,Math.round(bn*Math.min(2.0,cr))); // 数量变多
-  const sx=W+80,sp=52;
-  const layer=sRand();
-  let by;
-  if(layer<0.35)by=GROUND_Y-sRand(45,80);
-  else if(layer<0.75)by=GROUND_Y-sRand(120,175);
-  else by=GROUND_Y-sRand(200,255);
+const bn=3+Math.floor(sRand()*3); // 基础生成 3~5 个
+const n=Math.max(2,Math.round(bn*Math.min(1.6,cr)));
+// 打破固定间距，让金币串有长有短，有疏有密
+const sx=W+80, sp=rand(35, 48); // 间距变小，一串金币看起来更多、更密集
+const layer=sRand();
+let by;
+// 70% 概率在地面附近，30% 在中间高度，极少数才在天上
+if(layer<0.7) { by = GROUND_Y - sRand(40, 80); }
+else if(layer<0.9) { by = GROUND_Y - sRand(100, 160); }
+else { by = GROUND_Y - sRand(180, 220); }
   const arc=sRand()<0.6;
   for(let i=0;i<n;i++){
     const x=sx+i*sp;
@@ -1716,7 +1730,7 @@ const n=Math.max(3,Math.round(bn*Math.min(2.0,cr))); // 数量变多
     }
     if(!bl)coins.push({x,y,r:12,phase:sRand()*6.28});
   }
-  G.nextCoin=sRand(180,400)/cr; // 缩短刷新间隔，金币接踵而至
+G.nextCoin=sRand(350,650)/cr;
 }
 function spawnItem(){
   const r=Math.random();
@@ -5411,6 +5425,7 @@ function startBoss(){
   G.bossReward=null;G.stats.bossRuns++;
   obstacles.length=0;coins.length=0;items.length=0;particles.length=0;portals.length=0;
   resetPlayerState();pickWeather();
+initSeed(String(Date.now()) + Math.random()); // 强制初始化随机种子，打破固定循环！
   G.milestoneMsg='👹 BOSS 逼近，快跑！';G.milestoneMsgT=2.2;
   beep(200,0.3,'sawtooth',0.08,80);
   setTimeout(()=>beep(160,0.4,'sawtooth',0.08,60),200);
@@ -5534,9 +5549,19 @@ if(BOSS.gap>BOSS.gapMax)BOSS.gap=BOSS.gapMax;
   G.distance+=dx;G.scroll+=dx;
   G.bg1+=dx*0.05;G.bg2+=dx*0.18;G.bg3+=dx*0.42;
   if(map.ambient&&Math.random()<dt*20*PERF.envRate)spawnAmbientParticle(map);
-  G.nextSpawn-=dx;
-  if(G.nextSpawn<=0){spawnObstacle();G.nextSpawn=G.speed*(1.15+Math.random()*0.5)*(map.spawnMul||1);}
-  G.nextCoin-=dx;if(G.nextCoin<=0)spawnCoins();
+G.nextSpawn -= dx;
+if (G.nextSpawn <= 0) {
+  spawnObstacle();
+  // 修复：基于时间间隔生成，保底 1.2 秒，最高 2 秒，不再被防重叠代码搞成连体婴
+  const safeTime = 1.2 + Math.random() * 0.8; 
+  G.nextSpawn = G.speed * safeTime * (map.spawnMul || 1);
+}
+G.nextCoin -= dx; 
+if (G.nextCoin <= 0) {
+  spawnCoins();
+  // Boss 专属：金币大量产出，让你有足够金币回血保命
+  G.nextCoin = rand(120, 220); 
+}
   const pbox=playerBox();
   for(let i=obstacles.length-1;i>=0;i--){
     const o=obstacles[i];o.x-=dx;
@@ -5791,10 +5816,19 @@ function updateCoinRush(dt){
   G.distance+=dx;G.scroll+=dx;
   G.bg1+=dx*0.05;G.bg2+=dx*0.18;G.bg3+=dx*0.42;
   if(map.ambient&&Math.random()<dt*20*PERF.envRate)spawnAmbientParticle(map);
-  G.nextSpawn-=dx;
-  if(G.nextSpawn<=0){spawnObstacle();G.nextSpawn=G.speed*(3.5+Math.random()*1.5);}
-  G.nextCoin-=dx;
-  if(G.nextCoin<=0){spawnCoins();G.nextCoin=rand(120,260);}
+  // 障碍物：稍微拉长一点距离，防止叠在一起
+G.nextSpawn -= dx;
+if(G.nextSpawn<=0){
+  spawnObstacle();
+  G.nextSpawn = G.speed * (4.0 + Math.random() * 2.0); 
+}
+
+// 金币：大幅拉长间隔，金币风暴也是需要走位的！
+G.nextCoin -= dx;
+if (G.nextCoin <= 0) {
+  spawnCoins(); // 👈 取消双排，一次只刷一串
+  G.nextCoin = rand(180, 300); // 👈 间隔调回正常水平
+}
   const pbox=playerBox();
   for(let i=obstacles.length-1;i>=0;i--){
     const o=obstacles[i];o.x-=dx;
@@ -6472,14 +6506,17 @@ if(G.mode==='friends'){
     else if(G.growthTab==='season'){
   for(let i=0;i<SEASON_REWARDS.length;i++){
     const r = SEASON_REWARDS[i];
-    const y = 210 + i*100;
+    const cardY = 210 + i*100; // 👈 改名了，防止冲突
     const claimed = G.seasonClaimed.includes(i.toString());
-    if(G.seasonXP >= r.xp && !claimed && x>=360 && x<=480 && y>=y+20 && y<=y+60){
+    
+    // 👇 判断点击区域：x在360~480之间，y在卡片的按钮位置
+    if(G.seasonXP >= r.xp && !claimed && x>=360 && x<=480 && y>=cardY+20 && y<=cardY+60){
       G.seasonClaimed.push(i.toString());
       if(r.type==='coin') G.totalCoins += r.amount;
       else if(r.type==='wish') G.wishCoins += r.amount;
       else if(r.type==='shard') G.mythShard += r.amount;
       else if(r.type==='crystal') G.mythCrystal += r.amount;
+      
       alert('🎁 领取成功：' + r.name);
       beep(880,0.15,'triangle',0.06,1200);
       markDirty();
