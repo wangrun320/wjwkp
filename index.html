@@ -6383,7 +6383,7 @@ function handlePointerSimple(x,y){
         if(typeof logoutLocal==='function')logoutLocal();
         else{
           saveProgressOld();
-          currentUserId=null;SAVE_NS='mdf_';
+          currentUserId=null;
           localStorage.removeItem('wjw_token');
           localStorage.removeItem('wjw_uid');
           localStorage.removeItem('wjw_username');
@@ -6448,8 +6448,7 @@ if(G.mode==='mp_lobby'){
 if(G.mode==='global_rank'){
  // 刷新
 if(x>=40 && x<=190 && y>=790 && y<=840){
-  broadcastGlobalScore(); // 再次向服务器喊话，让在线的人都把分数发出来
-  // 删除了清理代码，让离线玩家的分数永久保留在本地
+  fetchTrueRank(); // 改为从云端拉取
   return;
 }
   // 返回
