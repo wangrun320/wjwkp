@@ -14,6 +14,38 @@ canvas{display:block;width:100%;height:100%}
 .btn:active{background:rgba(120,200,255,.28);transform:scale(.92)}
 #btnJump{right:4%}#btnSlide{right:28%}
 #btnFly{right:4%;bottom:24%;width:17%;max-width:92px;border-color:rgba(0,217,255,.5);color:rgba(180,245,255,.95);font-size:min(2.8vh,16px)}
+#studioSplash {
+  position: fixed;
+  inset: 0;
+  background: #05070f;
+  z-index: 10000; /* 保证在最顶层 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 1s ease-in-out;
+  opacity: 1;
+  pointer-events: none; /* 穿透点击，不影响下面 */
+}
+#studioSplash.hide {
+  opacity: 0;
+}
+.studio-text {
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 28px;
+  font-weight: 900;
+  background: linear-gradient(90deg, #4fd1ff, #ff5c9d);
+  -webkit-background-clip: text;
+  color: transparent;
+  letter-spacing: 6px;
+  text-shadow: 0 0 20px rgba(79, 209, 255, 0.4);
+  animation: zoomInOut 2s ease-out forwards;
+}
+@keyframes zoomInOut {
+  0% { transform: scale(0.6); opacity: 0; filter: blur(4px); }
+  30% { transform: scale(1.1); opacity: 1; filter: blur(0); }
+  50% { transform: scale(1); }
+  100% { transform: scale(1.2); opacity: 1; filter: blur(0); }
+}
 </style>
 </head>
 <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
@@ -28,6 +60,10 @@ window.onerror = function(msg, url, line, col, error) {
 };
 </script>
 <body>
+<div id="studioSplash">
+  <div class="studio-text">乐子猫工作室出品</div>
+</div>
+<input id="chatInputBox" type="text" maxlength="30" placeholder="说点什么..." style="position:absolute;opacity:0;pointer-events:none;">
 <div id="loginLayer" style="position:fixed;inset:0;background:#05070f;z-index:9999;display:none;align-items:center;justify-content:center;font-family:sans-serif;">
   <div style="background:rgba(22,34,70,0.95);padding:30px;border-radius:20px;width:80%;max-width:320px;text-align:center;border:2px solid #4fd1ff;box-shadow:0 0 30px rgba(79,209,255,0.3);">
     <h2 style="color:#7ee0ff;margin-bottom:20px;font-size:24px;text-shadow:0 0 10px #4fd1ff;">王金武快跑</h2>
@@ -527,6 +563,20 @@ function updateGlobalRank(data) {
   
   const old = globalScores[data.playerId];
   // 只有分数更高才更新
+  // 顺便更新好友的分数！
+if (G.friends && G.friends.length > 0) {
+  let friendUpdated = false;
+  for (let i = 0; i < G.friends.length; i++) {
+    if (G.friends[i].playerId === data.playerId && G.friends[i].best !== data.score) {
+      G.friends[i].best = data.score; // 更新最高分
+      friendUpdated = true;
+    }
+  }
+  if (friendUpdated) {
+    markDirty();
+    saveProgress();
+  }
+}
   if (!old || data.score > old.score) {
     globalScores[data.playerId] = {
       name: data.name || '跑者',
@@ -591,6 +641,7 @@ function startFriendMqtt(){
   friendMqtt.on('connect',()=>{
   friendMqtt.subscribe('wjw-friend-req/'+G.playerId);
   friendMqtt.subscribe('wjw-global-rank-v1'); // 订阅全服排行榜
+  friendMqtt.subscribe('wjw-global-chat-v1'); // 订阅聊天频道
   console.log('好友/排行通道已连接，ID:',G.playerId);
   broadcastGlobalScore(); // 上线就广播一次自己的分数
 });
@@ -598,7 +649,15 @@ function startFriendMqtt(){
   friendMqtt.on('message',(topic,payload)=>{
     try{
   const d=JSON.parse(payload.toString());
-  
+  // 接收聊天消息
+if(topic==='wjw-global-chat-v1'){
+  const d = JSON.parse(payload.toString());
+  // 如果消息不是自己发的（或者自己发的也行，但统一下）
+  G.chatLog.push({ name: d.name, text: d.text, time: Date.now() });
+  // 最多保留 20 条
+  if(G.chatLog.length > 20) G.chatLog.shift();
+  return;
+}
   // 接收排行榜消息
 if(topic==='wjw-global-rank-v1'){
   updateGlobalRank(d);
@@ -928,9 +987,12 @@ const SEASON_REWARDS = [
   {lv:6, xp:25000, type:'crystal', amount:1, name:'1 神话水晶'}
 ];
 const UPGRADES=[
-{id:'jump',name:'弹跳强化',icon:'🦘',desc:'跳跃高度 +2% / 级',maxLv:5,basePrice:200,priceMul:1.7},
-{id:'coin',name:'金币磁力',icon:'💰',desc:'金币获取 +5% / 级',maxLv:5,basePrice:250,priceMul:1.7},
-{id:'shield',name:'护盾强化',icon:'🛡',desc:'护盾无敌 +0.4 秒 / 级',maxLv:5,basePrice:300,priceMul:1.7}];
+{id:'jump',name:'弹跳强化',icon:'🦘',desc:'跳跃高度 +2% / 级 (满级额外+20%)',maxLv:50,basePrice:200,priceMul:1.15},
+{id:'coin',name:'金币磁力',icon:'💰',desc:'金币获取 +5% / 级',maxLv:50,basePrice:250,priceMul:1.18},
+{id:'shield',name:'护盾强化',icon:'🛡',desc:'护盾无敌 +0.4 秒 / 级',maxLv:50,basePrice:300,priceMul:1.2},
+{id:'speed',name:'起跑冲刺',icon:'⚡',desc:'初始跑速提升 (开局直接起飞)',maxLv:20,basePrice:2000,priceMul:1.35},
+{id:'startShield',name:'先天罡气',icon:'✨',desc:'每局开始自带 1 个护盾',maxLv:1,basePrice:15000,priceMul:1}
+];
 const ACHIEVEMENTS=[
 {id:'first',name:'初次奔跑',icon:'🏁',desc:'完成第一局跑酷',reward:20,check:s=>s.runs>=1},
 {id:'dist500',name:'短跑健将',icon:'🥉',desc:'单局跑过 500 米',reward:50,check:s=>s.maxDist>=500},
@@ -992,6 +1054,8 @@ const DAILY_POOL=[
 {id:'d_combo15',name:'连击 15',desc:'单局内连击达到 15',reward:250,check:()=>G.comboMax>=15},
 {id:'d_shield2',name:'护盾 2 次',desc:'单局内拾取 2 个护盾',reward:250,check:()=>G.sessionShields>=2}];
 const G={
+chatLog: [], // 聊天记录
+chatOpen: false, // 聊天面板是否展开
   mode:'lobby',returnMode:'lobby',time:0,deadT:0,
   speed:200,baseSpeed:200,maxSpeed:480,
   distance:0,coins:0,totalCoins:0,
@@ -1009,11 +1073,15 @@ const G={
   wishCoins:0,mythCrystal:0,mythShard:0,
   seasonXP:0,
 seasonClaimed:[],
+slowMoT:0,      // 慢动作剩余时间
+zzyFreezeT:0,  // 时间凝滞剩余时间
+zzyFreezeCD:0, // 凝滞冷却
+slowMoBonus:0,  // 慢动作期间的额外金币加成
   chestFx:[],chestMsg:'',chestMsgT:0,chestMsgColor:'#ffd93d',
   elbowFx:null,
   charSkins:{},ownedSkins:[],
   skinPanel:{open:false,charId:null},
-  upgrades:{jump:0,coin:0,shield:0},
+  upgrades:{jump:0,coin:0,shield:0,speed:0,startShield:0},
   achClaimed:[],achSeen:[],
   daily:{date:'',id:'',done:false,claimed:false},
   mapsUsed:[],growthTab:'upgrade',growScroll:0,
@@ -1128,7 +1196,13 @@ G.nickname = ls.getItem('mdf_nickname') || '';
       if(!cur||!G.ownedSkins.includes(cur))G.charSkins[c.id]=def;
     });
     const up=ls.getItem('mdf_upgrades');
-    if(up){const o=JSON.parse(up);UPGRADES.forEach(u=>{if(typeof o[u.id]==='number')G.upgrades[u.id]=clamp(o[u.id],0,u.maxLv);});}
+    if(up){
+  const o=JSON.parse(up);
+  UPGRADES.forEach(u=>{
+    if(typeof o[u.id]==='number') G.upgrades[u.id]=clamp(o[u.id],0,u.maxLv);
+    else G.upgrades[u.id] = 0; // 如果旧存档没有这一项，补0
+  });
+}
     const ac=ls.getItem('mdf_ach_claimed');
     G.achClaimed=ac?ac.split(',').filter(s=>s.length):[];
     const as=ls.getItem('mdf_ach_seen');
@@ -1459,8 +1533,12 @@ function startGame(keepWeather){
   MIDBOSS.triggered = false;
   MIDBOSS.timer = 0;
   MIDBOSS.bossY = -200;
-  G.baseSpeed=200;G.speed=200;
+  G.baseSpeed=200 + (G.upgrades.speed || 0) * 5; // 每级加5点基础速度
+G.speed=G.baseSpeed;
   resetRunState();
+  if(G.upgrades.startShield && G.upgrades.startShield > 0) {
+  G.shield = 1;
+}
   G.nextSpawn=1200;G.nextCoin=240;G.nextItem=600;G.nextPortal=1500;
   G.nextMilestone=800;G.milestoneMsg='';G.milestoneMsgT=0;
   if(!keepWeather){
@@ -1474,6 +1552,9 @@ function startEndless(){
   initAudio();G.mode='endless';
   G.baseSpeed=200;G.speed=200;
   resetRunState();
+  if(G.upgrades.startShield && G.upgrades.startShield > 0) {
+  G.shield = 1;
+}
   G.nextSpawn=1000;G.nextCoin=240;G.nextItem=600;G.nextPortal=1500;
   G.nextMilestone=800;G.milestoneMsg='';G.milestoneMsgT=0;
   ENDLESS.active=true;ENDLESS.lives=ENDLESS.maxLives;
@@ -1581,7 +1662,10 @@ if(checkDaily()){G.milestoneMsg='🎯 每日挑战完成！去成长中心领奖
 markDirty();saveProgress();
 broadcastGlobalScore(); // 广播排行榜
 }
-function canFly(){const ch=getChar();return ch.id==='kcb'&&(G.mode==='playing'||G.mode==='boss'||G.mode==='endless')&&G.flightT<=0&&G.flightCD<=0&&!P.flying;}
+function canFly(){
+  const ch=getChar();
+  return ch.id==='kcb' && ['playing','boss','endless','coin','sd'].includes(G.mode) && G.flightT<=0 && G.flightCD<=0 && !P.flying;
+}
 function tryActivateFlight(){
   initAudio();if(!canFly())return;
   P.flying=true;P.flyPhase=0;
@@ -1600,7 +1684,7 @@ function tryActivateFlight(){
 }
 function tryActivateJufei(){
   initAudio();
-  if(G.mode!=='playing'&&G.mode!=='boss'&&G.mode!=='endless')return;
+  if(!['playing','boss','endless','coin','sd'].includes(G.mode))return;
   const ch=getChar();
   if(ch.id!=='ylz'||G.jufeiCD>0||G.jufeiShell)return;
   const isTurtle=ch.skinId==='ylz_turtle';
@@ -1623,12 +1707,50 @@ function tryActivateJufei(){
   setTimeout(()=>beep(980,0.2,'triangle',0.06,1400),200);
   const f=checkAchievements();if(f.length)G.newAch=f;markDirty();
 }
+function tryActivateZzyFreeze(){
+  initAudio();
+  if(!['playing','boss','endless'].includes(G.mode)) return;
+  const ch=getChar();
+  if(ch.id!=='zzy' || G.zzyFreezeT>0 || G.zzyFreezeCD>0 || P.flying) return;
+  
+  G.zzyFreezeT = 3.0; 
+  G.zzyFreezeCD = 12.0; 
+  
+  // 👇 核心判断：火莲皮肤专属文案
+  const isFlame = ch.skinId === 'zzy_flame';
+  G.milestoneMsg = isFlame ? '🔥 业火焚天！烈焰推土机！' : '⚡ 雷神降临！无敌推土机！'; 
+  G.milestoneMsgT = 1.5;
+  G.shake = 15;
+  
+  if (isFlame) {
+    // 火莲专属音效：低沉的轰鸣+火焰燃烧
+    beep(80, 0.5, 'sawtooth', 0.1, 30);
+    setTimeout(()=>beep(400, 0.3, 'sawtooth', 0.08, 100), 150);
+  } else {
+    // 原版雷神音效
+    beep(150, 0.4, 'sawtooth', 0.08, 50);
+    setTimeout(()=>beep(1200, 0.2, 'triangle', 0.06, 800), 150);
+  }
+  
+  // 👇 核心判断：火莲皮肤专属粒子
+  for(let i=0; i<40; i++){
+    const col = isFlame 
+      ? (Math.random()<0.5 ? '#d94fd9' : '#ff2020') // 紫红业火
+      : (Math.random()<0.5 ? '#7ec8ff' : '#ffffff'); // 原版蓝雷
+    addParticle(rand(0,W), rand(0,H), rand(-50,50), rand(-50,50), rand(0.3,0.8), col, rand(2,5), 0);
+  }
+}
 function tryActivateDash(){
   initAudio();
-  if(G.mode!=='playing'&&G.mode!=='boss'&&G.mode!=='endless')return;
+  if(!['playing','boss','endless','coin','sd'].includes(G.mode))return;
   const ch=getChar();
   if(ch.id!=='zyc'||G.dashT>0||G.zycCD>0||P.flying)return;
-  G.dashT=DASH_DURATION;G.zycCD=DASH_CD;P.dashing=true;
+  G.dashT=DASH_DURATION;
+G.zycCD=10; // 被动生效：冷却时间缩减为 10 秒
+P.dashing=true;
+
+// 被动生效：冲刺后自动获得 8 秒磁铁效果
+G.magnetT = Math.max(G.magnetT, 8); 
   P.vy=0;P.sliding=false;P.slideT=0;P.onGround=true;
   G.invulnT=Math.max(G.invulnT,DASH_DURATION+0.1);
   G.milestoneMsg='⚡ 疾影突进！';G.milestoneMsgT=1.0;
@@ -1642,10 +1764,10 @@ function tryActivateDash(){
 }
 function tryActivateSoul(){
   initAudio();
-  if(G.mode!=='playing'&&G.mode!=='boss'&&G.mode!=='endless')return;
+  if(!['playing','boss','endless','coin','sd'].includes(G.mode))return;
   const ch=getChar();
   if(ch.id!=='opl'||G.soulCD>0||G.soulActive||P.flying)return;
-  G.soulActive=true;G.soulT=8;G.soulCD=20;
+  G.soulActive=true;G.soulT=8;G.soulCD=15;
   G.stats.soulCount=(G.stats.soulCount||0)+1;
   G.milestoneMsg='👻 灵体分身！本体留在原地';G.milestoneMsgT=2;
   G.shake=8;
@@ -1865,6 +1987,14 @@ function characterParticles(ch,dt){
 }
 
 function update(dt){
+// ===== 完美闪避子弹时间 =====
+if (G.slowMoT > 0) {
+  G.slowMoT -= dt; // 用真实时间倒计时
+  dt *= 0.35;      // 所有物体的移动速度变为 35%（极慢）
+  if (G.slowMoT <= 0) {
+    G.slowMoBonus = 0; // 慢动作结束，加成取消
+  }
+}
   tickSave(dt);
   // ===== 联机准备倒计时（统一在 update 推进，保证 mp_lobby 也生效）=====
   if (mpStartCountdown > 0) {
@@ -1930,6 +2060,12 @@ if(G.mode==='lobby'){
     updateParticles(dt);return;
   }
   if(G.mode!=='playing'&&G.mode!=='endless')return;
+  // 张子阳凝滞 CD 计算
+if(G.zzyFreezeT > 0) G.zzyFreezeT -= dt;
+if(G.zzyFreezeCD > 0) G.zzyFreezeCD -= dt;
+
+let currentDt = dt;
+if(G.zzyFreezeT > 0){ G.zzyFreezeT -= dt; currentDt = dt * 0.05; }
   // ===== 3000米遭遇战触发逻辑 =====
 const currentMeters = G.distance / 10;
 if (G.mode === 'playing' && currentMeters >= 3000 && !MIDBOSS.triggered) {
@@ -2136,8 +2272,9 @@ G.speed=spd;
   G.nextPortal-=dx;if(G.nextPortal<=0){spawnPortal();G.nextPortal=rand(2000,3500);}
   const pbox=playerBox();
   for(let i=obstacles.length-1;i>=0;i--){
-    const o=obstacles[i];
-    o.x-=dx;
+  const o=obstacles[i];
+  // 如果被冻结了，移动速度只有 2%（几乎静止）
+  o.x -= dx;
     if(o.type==='drone'){o.bobT+=dt*3;o.y=o.baseY-o.w/2+Math.sin(o.bobT)*o.bobA;}
     else if(o.type==='hologram'){o.bobT+=dt*2.6;o.y=o.baseY+Math.sin(o.bobT)*o.bobA;}
     else if(o.type==='fireball'){o.phase+=dt*4;o.y=o.baseY-o.h/2-Math.sin(o.phase)*o.amp;}
@@ -2145,7 +2282,49 @@ G.speed=spd;
     if(o.x+o.w<-180){obstacles.splice(i,1);continue;}
     if(P.flying){if(aabb(pbox,o)&&Math.random()<dt*30){for(let k=0;k<5;k++)addParticle(o.x+o.w/2,o.y+o.h/2,rand(-180,180),rand(-200,80),rand(0.2,0.5),'#00d9ff',rand(1.5,3),200);}continue;}
     const obox=mapObstacleBox(o);
+    // === 完美闪避判定（精准擦边版） ===
+// 1. 水平方向重叠（障碍物正在穿过玩家）
+if (o.x < pbox.x + pbox.w && o.x + o.w > pbox.x && !o.dodged) {
+  o.dodged = true; 
+  
+  let perfect = false;
+  const pBottom = pbox.y + pbox.h; // 玩家脚底
+  const pTop = pbox.y;             // 玩家头顶
+  const obox = mapObstacleBox(o);
+
+  if (!P.onGround && !P.sliding) {
+    // 跳跃状态下：脚底距离障碍物顶部极近（0~25像素）才算擦边！
+    if (obox.y >= pBottom && obox.y - pBottom < 25) perfect = true;
+  } else if (P.sliding) {
+    // 滑铲状态下：因为滑铲本身就很极限，只要水平躲过就算完美
+    perfect = true;
+  }
+
+  if (perfect) {
+    G.slowMoT = 1.2; 
+    G.slowMoBonus = 1; 
+    G.milestoneMsg = '⚡ PERFECT 完美闪避！';
+    G.milestoneMsgT = 1.5;
+    beep(880, 0.1, 'triangle', 0.05, 1200);
+    setTimeout(()=>beep(1400, 0.15, 'triangle', 0.05, 1800), 80);
+  }
+}
+// ====================
     if(aabb(pbox,obox)){
+    // 如果处于雷神状态，直接撞碎障碍物
+if(G.zzyFreezeT > 0){
+  obstacles.splice(i,1); 
+  G.shake = 8;
+  const isFlame = getChar().skinId === 'zzy_flame';
+  for(let k=0;k<15;k++) {
+    // 根据皮肤决定粒子颜色：火莲为紫/橙，原版为蓝/白
+    const hitCol = isFlame 
+      ? (Math.random()<0.5 ? '#ff8020' : '#d94fd9') 
+      : (Math.random()<0.5 ? '#7ec8ff' : '#ffffff');
+    addParticle(o.x+o.w/2, o.y+o.h/2, rand(-300,300), rand(-300,300), rand(0.3,0.6), hitCol, rand(2,6), 0);
+  }
+  continue; // 跳过死亡判定
+}
   if(G.invulnT>0){obstacles.splice(i,1);for(let k=0;k<14;k++)addParticle(o.x+o.w/2,o.y+o.h/2,rand(-260,260),rand(-300,100),rand(0.3,0.7),'#7ee0ff',rand(2,5),600);continue;}
   
   // === 找到护盾判定，加入牢大肘击 ===
@@ -2189,8 +2368,9 @@ else{G.doubleT=10;G.stats.doubleCount++;G.milestoneMsg='✨ 双倍金币 10 秒'
   const mag=G.magnetT>0||P.flying;
   const mcv=map.coinValue||1;
   for(let i=coins.length-1;i>=0;i--){
-    const c=coins[i];
-    c.x-=dx;c.phase+=dt*4.5;
+  const c=coins[i];
+  // 金币也几乎静止
+  c.x -= dx;
     if(mag){
       const ddx=pcx-c.x,ddy=pcy-c.y;
       const d=Math.sqrt(ddx*ddx+ddy*ddy)||1;
@@ -2203,7 +2383,11 @@ else{G.doubleT=10;G.stats.doubleCount++;G.milestoneMsg='✨ 双倍金币 10 秒'
       G.combo++;G.comboTimer=cw;
       if(G.combo>G.comboMax)G.comboMax=G.combo;
       const mult=comboMult();
-      const gain=Math.max(1,Math.floor(mult*(G.doubleT>0?2:1)*getCoinBonus()*mcv));
+      // 如果在子弹时间，额外吃 1 倍（也就是总计 2 倍）
+const slowBonus = G.slowMoBonus > 0 ? 2 : 1;
+// 欧破路专属被动：灵体期间金币收益翻倍
+let soulBonus = (ch.id === 'opl' && G.soulActive) ? 2 : 1;
+const gain=Math.max(1,Math.floor(mult*(G.doubleT>0?2:1)*getCoinBonus()*mcv*slowBonus*soulBonus));
       G.coins+=gain;G.totalCoins+=gain;G.stats.totalEarned+=gain;
       beep(1150+Math.min(G.combo,20)*26,0.09,'sine',0.045,1900);
       for(let k=0;k<9;k++)addParticle(c.x,c.y,rand(-180,180),rand(-230,60),rand(0.25,0.55),Math.random()<0.6?'#ffd93d':'#fff3b0',rand(2,4.5),420);
@@ -4192,6 +4376,7 @@ function drawKobeHelicopter(ch, t) {
   ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI*2); ctx.fill();
   ctx.restore(); ctx.restore();
 }
+
 function drawCharacterBody(ch,t,sliding,flyingOverride){
   const isFlying=flyingOverride!==undefined?flyingOverride:P.flying;
 
@@ -4353,7 +4538,79 @@ function drawCompanion(){
   ctx.font='32px system-ui,"Apple Color Emoji","Segoe UI Emoji"';
   ctx.fillText(p.emoji,bx,by);ctx.restore();
 }
+function drawChatPanel(){
+  if(!G.chatOpen) return;
+  
+  // 背景
+  ctx.fillStyle='rgba(10,16,38,0.95)';
+  roundRect(20, H/2 - 200, W-40, 400, 16);ctx.fill();
+  ctx.strokeStyle='rgba(126,224,255,0.8)';ctx.lineWidth=2;
+  roundRect(20, H/2 - 200, W-40, 400, 16);ctx.stroke();
+  
+  // 标题
+  ctx.fillStyle='#fff';ctx.font='bold 18px '+FONT;
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('全服聊天室 (最多显示20条)', W/2, H/2 - 175);
+  
+  // 消息列表
+  ctx.textAlign='left';
+  let startY = H/2 - 145;
+  for(let i=0; i<G.chatLog.length; i++){
+    const msg = G.chatLog[i];
+    ctx.font='bold 14px '+FONT;ctx.fillStyle='#7ee0ff';
+    ctx.fillText(msg.name + ':', 40, startY + i * 22);
+    ctx.font='14px '+FONT;ctx.fillStyle='#fff';
+    ctx.fillText(msg.text, 110, startY + i * 22);
+  }
+  
+  // 输入框（虚拟绘制）
+  ctx.fillStyle='rgba(255,255,255,0.1)';
+  roundRect(40, H/2 + 130, W-150, 40, 10);ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1;
+  roundRect(40, H/2 + 130, W-150, 40, 10);ctx.stroke();
+  
+  const inputText = document.getElementById('chatInputBox').value;
+  ctx.fillStyle = inputText ? '#fff' : 'rgba(255,255,255,0.3)';
+  ctx.font='14px '+FONT;
+  ctx.fillText(inputText || '点击这里输入...', 50, H/2 + 150);
+  
+  // 发送按钮
+  ctx.fillStyle='rgba(79,209,255,0.3)';
+  roundRect(W-100, H/2 + 130, 60, 40, 10);ctx.fill();
+  ctx.strokeStyle='#4fd1ff';ctx.lineWidth=1.5;
+  roundRect(W-100, H/2 + 130, 60, 40, 10);ctx.stroke();
+  ctx.fillStyle='#fff';ctx.font='bold 14px '+FONT;
+  ctx.textAlign='center';ctx.fillText('发送', W-70, H/2 + 150);
+  
+  // 关闭按钮
+  ctx.fillStyle='rgba(255,90,90,0.2)';
+  roundRect(W/2 - 40, H/2 + 180, 80, 30, 8);ctx.fill();
+  ctx.fillStyle='#ff8a8a';ctx.font='bold 14px '+FONT;
+  ctx.fillText('关闭', W/2, H/2 + 195);
+}
 function drawHUD(){
+if (G.slowMoT > 0) {
+  ctx.save();
+  // 画面四周暗红色的滤镜
+  const grad = ctx.createRadialGradient(W/2, H/2, 100, W/2, H/2, 600);
+  grad.addColorStop(0, 'rgba(255, 0, 0, 0)');
+  grad.addColorStop(1, 'rgba(255, 0, 50, 0.35)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+  
+  // 完美的巨大文字提示
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = 'bold 36px ' + FONT;
+  ctx.fillStyle = '#ffd93d';
+  ctx.shadowColor = '#ff0000'; ctx.shadowBlur = 20;
+  const scale = 1 + Math.sin(G.time * 20) * 0.1;
+  ctx.save();
+  ctx.translate(W/2, H/2 - 100);
+  ctx.scale(scale, scale);
+  ctx.fillText('PERFECT!', 0, 0);
+  ctx.restore();
+  ctx.restore();
+}
   const ch=getChar(),map=getMap(),m=displayMeters(),ms=m+'';
   ctx.save();
   ctx.shadowColor='rgba(0,0,0,0.75)';ctx.shadowBlur=10;ctx.textBaseline='top';
@@ -4487,6 +4744,36 @@ function drawHUD(){
     if(rd){ctx.shadowColor=color;ctx.shadowBlur=10;}
     ctx.fillText(label,sx+tw/2,sy+14);ctx.restore();sx+=tw+8;
   }
+  if(ch.id==='zzy'&&(G.mode==='playing'||G.mode==='endless'||G.mode==='boss')){
+  const rd=G.zzyFreezeCD<=0;
+  const label=rd?'⚡ 凝滞就绪':'⚡ 凝滞 '+Math.ceil(G.zzyFreezeCD)+'s';
+  const color=rd?'#7ec8ff':'rgba(180,215,255,0.55)';
+  ctx.save();ctx.font='bold 13px '+FONT;
+  const tw=ctx.measureText(label).width+26;
+  ctx.fillStyle='rgba(8,14,32,0.75)';roundRect(sx,sy,tw,26,13);ctx.fill();
+  ctx.strokeStyle=color;ctx.globalAlpha=0.85;ctx.lineWidth=1.5;roundRect(sx,sy,tw,26,13);ctx.stroke();ctx.globalAlpha=1;
+  if(!rd){
+    ctx.save();ctx.beginPath();
+    roundRect(sx+2,sy+2,(tw-4)*(1-G.zzyFreezeCD/12),22,11);ctx.clip();
+    ctx.globalAlpha=0.22;ctx.fillStyle='#7ec8ff';ctx.fillRect(sx,sy,tw,26);ctx.restore();
+  }
+  ctx.fillStyle=color;ctx.textAlign='center';ctx.textBaseline='middle';
+  if(rd){ctx.shadowColor=color;ctx.shadowBlur=10;}
+  ctx.fillText(label,sx+tw/2,sy+14);ctx.restore();sx+=tw+8;
+}
+
+if(G.zzyFreezeT > 0){
+  const isFlame = getChar().skinId === 'zzy_flame';
+  ctx.save();
+  // 火莲为紫红滤镜，原版为蓝色滤镜
+  ctx.fillStyle = isFlame ? 'rgba(217, 79, 217, 0.15)' : 'rgba(126, 200, 255, 0.1)';
+  ctx.fillRect(0, 0, W, H);
+  
+  ctx.strokeStyle = isFlame ? 'rgba(217, 79, 217, 0.4)' : 'rgba(126, 200, 255, 0.4)';
+  ctx.lineWidth = 10;
+  ctx.strokeRect(0, 0, W, H);
+  ctx.restore();
+}
   if(ch.id==='zyc'&&(G.mode==='playing'||G.mode==='endless')){
     if(G.dashT>0)pill('⚡ 冲刺无敌','#ffd93d',G.dashT/DASH_DURATION);
     else{
@@ -4666,15 +4953,25 @@ let _isLoadingRank = false;
 async function fetchTrueRank() {
   if (_isLoadingRank) return;
   _isLoadingRank = true;
+  
+  // 2秒超时控制器，防止国内网络卡死
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2000);
+
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/leaderboard?select=*&order=score.desc&limit=20`, {
-      headers: { 'apikey': SUPABASE_KEY }
+      headers: { 'apikey': SUPABASE_KEY },
+      signal: controller.signal // 绑定超时
     });
     if (res.ok) {
       _trueRankData = await res.json();
     }
-  } catch(e) { console.error(e); }
-  _isLoadingRank = false;
+  } catch(e) { 
+    console.log('排行榜连接超时或失败', e); 
+  } finally {
+    clearTimeout(timeoutId);
+    _isLoadingRank = false; // 无论成功失败，必须解除锁定！
+  }
 }
 
 function drawGlobalRank(){
@@ -4689,9 +4986,24 @@ function drawGlobalRank(){
   }
 
   if (_trueRankData.length === 0) {
-    ctx.font='18px '+FONT;ctx.fillStyle='rgba(200,220,255,0.5)';
-    ctx.fillText(_isLoadingRank ? '加载中...' : '暂无数据，快去跑一局上榜吧！',W/2,300);
-  } else {
+  // 网络连不上时，显示本地最高分兜底
+  ctx.fillStyle = 'rgba(255,215,0,0.15)';
+  roundRect(40, 140, 460, 70, 14); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,215,0,0.8)'; ctx.lineWidth = 2.5;
+  roundRect(40, 140, 460, 70, 14); ctx.stroke();
+  
+  ctx.font = 'bold 24px ' + FONT; ctx.fillStyle = '#ffd700'; ctx.textAlign = 'left';
+  ctx.fillText('1', 60, 175);
+  ctx.fillStyle = '#ffd93d'; ctx.font = 'bold 20px ' + FONT;
+  ctx.fillText((G.nickname || '跑者') + ' (本地)', 110, 168);
+  ctx.fillStyle = '#ffd93d'; ctx.font = 'bold 22px ' + FONT; ctx.textAlign = 'right';
+  ctx.fillText(G.best + ' 米', 480, 178);
+
+  ctx.textAlign = 'center'; ctx.font = '14px ' + FONT; ctx.fillStyle = 'rgba(180,215,255,0.6)';
+  ctx.fillText('当前网络无法连接云端，仅显示本地最高纪录', W/2, 260);
+  ctx.fillText('(如果之前有缓存过全服数据，刷新成功后会显示)', W/2, 285);
+} else {
+  // 这里保留你原本画排行榜列表的代码 (for 循环那部分) else {
     const myId = G.playerId || 'unknown';
     for (let i=0; i<Math.min(_trueRankData.length, 7); i++) {
       const item = _trueRankData[i];
@@ -4842,6 +5154,15 @@ ctx.fillText('🏆 全服榜', L_DUEL.x+L_DUEL.w/2, L_DUEL.y-62+26);ctx.restore(
   drawUIButton(L_SD,'⚡ 极限时速',[255,64,64],true);
   drawUIButton(L_SHOP,'商 店',[140,180,240],true);
   drawUIButton(L_GROW,'成 长',[200,140,240],true);
+  // 聊天按钮
+ctx.fillStyle='rgba(255,255,255,0.1)';
+roundRect(W-80, H-120, 60, 60, 30);ctx.fill();
+ctx.strokeStyle='rgba(126,224,255,0.5)';ctx.lineWidth=2;
+roundRect(W-80, H-120, 60, 60, 30);ctx.stroke();
+ctx.fillStyle='#7ee0ff';ctx.font='28px '+FONT;
+ctx.textAlign='center';ctx.textBaseline='middle';
+ctx.fillText('💬', W-50, H-89);
+drawChatPanel();
 }
 function charStats(c){
   return{
@@ -4855,6 +5176,7 @@ const FRIEND_ADD_BTN={x:196,y:110,w:150,h:52};
 const FRIEND_REQ_BTN={x:362,y:110,w:148,h:52};
 const FRIEND_BACK_BTN={x:30,y:910,w:180,h:50};
 const FRIEND_NAME_BTN={x:230,y:910,w:160,h:50};
+const FRIEND_REFRESH_BTN={x:410,y:910,w:100,h:50};
 const FRIEND_LIST_Y=180;
 const FRIEND_ITEM_H=80;
 const FRIEND_ITEM_GAP=88;
@@ -4984,6 +5306,10 @@ function buildFriendRanking(){
 }
 
 function drawFriends(){
+// 每次打开好友页面，先广播一次自己的最新分数，让在线好友更新我
+if (typeof broadcastGlobalScore === 'function') {
+  setTimeout(() => broadcastGlobalScore(), 500);
+}
   ctx.fillStyle='rgba(4,7,18,0.94)';ctx.fillRect(0,0,W,H);
   ctx.save();ctx.textBaseline='middle';ctx.textAlign='left';ctx.font='bold 28px '+FONT;
   ctx.fillStyle='#fff';ctx.fillText('好友排行榜',30,44);ctx.restore();
@@ -5090,6 +5416,7 @@ drawUIButton(FRIEND_REQ_BTN,'📨 申请',[255,140,200],true);
   }
 
   drawUIButton(FRIEND_NAME_BTN,'✏️ 改名',[140,200,255],true);
+  drawUIButton(FRIEND_REFRESH_BTN,'🔄 刷新',[255,210,60],true);
   drawUIButton(FRIEND_BACK_BTN,'返 回',[79,209,255],true);
 }
 function drawMapSelect(){
@@ -5458,7 +5785,7 @@ function endBoss(){
   if(score>G.stats.bossBest)G.stats.bossBest=score;
   G.stats.totalDist+=score;
   let best=null,next=null;
-  for(let i=0;i<BOSS_REWARDS.length;i++){if(score>=BOSS_REWARDS[i].dist)best=BOSS_REWARDS[i];else{next=BOSS_REWARDS[i];break;}}
+  for(let i=0;i+SS_REWARDS.length;i++){if(score>=BOSS_REWARDS[i].dist)best=BOSS_REWARDS[i];else{next=BOSS_REWARDS[i];break;}}
   let rc=0,rs=0,rw=0;
   if(best){rc=best.coins;rs=best.shard;rw=best.wish;}
   G.totalCoins+=rc;G.mythShard+=rs;G.wishCoins+=rw;G.stats.totalEarned+=rc;
@@ -5571,6 +5898,34 @@ if (G.nextCoin <= 0) {
     else if(o.type==='petalwind'){o.phase+=dt*3;}
     if(o.x+o.w<-180){obstacles.splice(i,1);continue;}
     const obox=mapObstacleBox(o);
+    // === 完美闪避判定（精准擦边版） ===
+// 1. 水平方向重叠（障碍物正在穿过玩家）
+if (o.x < pbox.x + pbox.w && o.x + o.w > pbox.x && !o.dodged) {
+  o.dodged = true; 
+  
+  let perfect = false;
+  const pBottom = pbox.y + pbox.h; // 玩家脚底
+  const pTop = pbox.y;             // 玩家头顶
+  const obox = mapObstacleBox(o);
+
+  if (!P.onGround && !P.sliding) {
+    // 跳跃状态下：脚底距离障碍物顶部极近（0~25像素）才算擦边！
+    if (obox.y >= pBottom && obox.y - pBottom < 25) perfect = true;
+  } else if (P.sliding) {
+    // 滑铲状态下：因为滑铲本身就很极限，只要水平躲过就算完美
+    perfect = true;
+  }
+
+  if (perfect) {
+    G.slowMoT = 1.2; 
+    G.slowMoBonus = 1; 
+    G.milestoneMsg = '⚡ PERFECT 完美闪避！';
+    G.milestoneMsgT = 1.5;
+    beep(880, 0.1, 'triangle', 0.05, 1200);
+    setTimeout(()=>beep(1400, 0.15, 'triangle', 0.05, 1800), 80);
+  }
+}
+// ====================
     if(aabb(pbox,obox)){
       if(G.invulnT>0){obstacles.splice(i,1);continue;}
       BOSS.gap -= 250;BOSS.alertT=1.5;G.shake=18;BOSS.hitFlashT=0.5;G.invulnT=0.9;
@@ -5777,6 +6132,14 @@ function endCoinRush(){
   broadcastGlobalScore();
 }
 function updateCoinRush(dt){
+if(P.slideCD>0) P.slideCD -= dt;
+if(G.flightCD>0) G.flightCD -= dt;
+if(G.jufeiCD>0) G.jufeiCD -= dt;
+if(G.zycCD>0) G.zycCD -= dt;
+if(G.soulCD>0) G.soulCD -= dt;
+if(G.dashSpeedT>0) G.dashSpeedT -= dt;
+if(G.soulActive) { G.soulT -= dt; if(G.soulT<=0) G.soulActive=false; }
+if(G.dashT>0) { G.dashT -= dt; if(G.dashT<=0) { G.dashT=0; P.dashing=false; G.dashSpeedT=DASH_SPEED_TIME; } }
   G.time+=dt;updateWeatherFx(dt);
   if(G.shake>0.4){G.shake*=Math.pow(0.015,dt);if(G.shake<0.4)G.shake=0;}else G.shake=0;
   if(G.milestoneMsgT>0)G.milestoneMsgT-=dt;
@@ -5838,6 +6201,34 @@ if (G.nextCoin <= 0) {
     else if(o.type==='petalwind'){o.phase+=dt*3;}
     if(o.x+o.w<-180){obstacles.splice(i,1);continue;}
     const obox=mapObstacleBox(o);
+    // === 完美闪避判定（精准擦边版） ===
+// 1. 水平方向重叠（障碍物正在穿过玩家）
+if (o.x < pbox.x + pbox.w && o.x + o.w > pbox.x && !o.dodged) {
+  o.dodged = true; 
+  
+  let perfect = false;
+  const pBottom = pbox.y + pbox.h; // 玩家脚底
+  const pTop = pbox.y;             // 玩家头顶
+  const obox = mapObstacleBox(o);
+
+  if (!P.onGround && !P.sliding) {
+    // 跳跃状态下：脚底距离障碍物顶部极近（0~25像素）才算擦边！
+    if (obox.y >= pBottom && obox.y - pBottom < 25) perfect = true;
+  } else if (P.sliding) {
+    // 滑铲状态下：因为滑铲本身就很极限，只要水平躲过就算完美
+    perfect = true;
+  }
+
+  if (perfect) {
+    G.slowMoT = 1.2; 
+    G.slowMoBonus = 1; 
+    G.milestoneMsg = '⚡ PERFECT 完美闪避！';
+    G.milestoneMsgT = 1.5;
+    beep(880, 0.1, 'triangle', 0.05, 1200);
+    setTimeout(()=>beep(1400, 0.15, 'triangle', 0.05, 1800), 80);
+  }
+}
+// ====================
     if(aabb(pbox,obox)){
       if(G.invulnT>0){obstacles.splice(i,1);continue;}
       G.invulnT=0.8;G.coinRushSlowT=1.2;G.shake=14;
@@ -5945,6 +6336,14 @@ function endSpeedDemon(){
   broadcastGlobalScore(); // 广播排行榜
 }
 function updateSpeedDemon(dt){
+if(P.slideCD>0) P.slideCD -= dt;
+if(G.flightCD>0) G.flightCD -= dt;
+if(G.jufeiCD>0) G.jufeiCD -= dt;
+if(G.zycCD>0) G.zycCD -= dt;
+if(G.soulCD>0) G.soulCD -= dt;
+if(G.dashSpeedT>0) G.dashSpeedT -= dt;
+if(G.soulActive) { G.soulT -= dt; if(G.soulT<=0) G.soulActive=false; }
+if(G.dashT>0) { G.dashT -= dt; if(G.dashT<=0) { G.dashT=0; P.dashing=false; G.dashSpeedT=DASH_SPEED_TIME; } }
   G.time+=dt;updateWeatherFx(dt);
   if(G.shake>0.4){G.shake*=Math.pow(0.015,dt);if(G.shake<0.4)G.shake=0;}else G.shake=0;
   if(G.milestoneMsgT>0)G.milestoneMsgT-=dt;
@@ -6011,6 +6410,34 @@ function updateSpeedDemon(dt){
     else if(o.type==='petalwind'){o.phase+=dt*3;}
     if(o.x+o.w<-180){obstacles.splice(i,1);continue;}
     const obox=mapObstacleBox(o);
+    // === 完美闪避判定（精准擦边版） ===
+// 1. 水平方向重叠（障碍物正在穿过玩家）
+if (o.x < pbox.x + pbox.w && o.x + o.w > pbox.x && !o.dodged) {
+  o.dodged = true; 
+  
+  let perfect = false;
+  const pBottom = pbox.y + pbox.h; // 玩家脚底
+  const pTop = pbox.y;             // 玩家头顶
+  const obox = mapObstacleBox(o);
+
+  if (!P.onGround && !P.sliding) {
+    // 跳跃状态下：脚底距离障碍物顶部极近（0~25像素）才算擦边！
+    if (obox.y >= pBottom && obox.y - pBottom < 25) perfect = true;
+  } else if (P.sliding) {
+    // 滑铲状态下：因为滑铲本身就很极限，只要水平躲过就算完美
+    perfect = true;
+  }
+
+  if (perfect) {
+    G.slowMoT = 1.2; 
+    G.slowMoBonus = 1; 
+    G.milestoneMsg = '⚡ PERFECT 完美闪避！';
+    G.milestoneMsgT = 1.5;
+    beep(880, 0.1, 'triangle', 0.05, 1200);
+    setTimeout(()=>beep(1400, 0.15, 'triangle', 0.05, 1800), 80);
+  }
+}
+// ====================
     if(aabb(pbox,obox)){
       if(G.invulnT>0){obstacles.splice(i,1);continue;}
       endSpeedDemon();return;
@@ -6219,11 +6646,12 @@ window.addEventListener('keydown',function(e){
   }
   if(e.code==='KeyF'){
     e.preventDefault();
-    if((G.mode==='playing'||G.mode==='boss'||G.mode==='endless')&&!e.repeat){
+    const skillModes=['playing','boss','endless','coin','sd'].includes(G.mode);{
       const c=getChar();
       if(c.id==='kcb')tryActivateFlight();
       else if(c.id==='ylz')tryActivateJufei();
       else if(c.id==='zyc')tryActivateDash();
+      else if(c.id==='zzy')tryActivateZzyFreeze();
       else if(c.id==='opl')tryActivateSoul();
     }
     return;
@@ -6301,13 +6729,14 @@ function openChest(){
   const hasEgg=G.ownedSkins.includes(EGG_ID);
   const hasTurtle=G.ownedSkins.includes(TURTLE_ID);
 
-  const pool=[];
-  if(!hasEgg)   pool.push({type:'skin', id:EGG_ID,    w:15});
-  if(!hasTurtle)pool.push({type:'skin', id:TURTLE_ID, w:15});
-  pool.push({type:'crystal', w:5});
-  pool.push({type:'wish',    w:8});
-  pool.push({type:'shard',   w:22});
-  pool.push({type:'coin',    w:35});
+const pool=[];
+if(!hasEgg)   pool.push({type:'skin', id:EGG_ID,    w:15}); // 限定皮肤 15%
+if(!hasTurtle)pool.push({type:'skin', id:TURTLE_ID, w:15}); // 限定皮肤 15%
+
+pool.push({type:'crystal', w:10}); // 神话水晶 5% -> 提升到 10%
+pool.push({type:'wish',    w:20}); // 心愿币 8% -> 提升到 20%
+pool.push({type:'shard',   w:30}); // 碎片 22% -> 提升到 30%
+pool.push({type:'coin',    w:25}); // 金币 35% -> 降低到 25%
 
   const total=pool.reduce((s,p)=>s+p.w,0);
   let r=Math.random()*total, pick=pool[pool.length-1];
@@ -6375,6 +6804,44 @@ function handlePointerSimple(x,y){
     return;
   }
   if(G.mode==='lobby'){
+  // 聊天面板交互
+if(G.chatOpen){
+  // 关闭
+  if(x>=W/2-40 && x<=W/2+40 && y>=H/2+180 && y<=H/2+210){
+    G.chatOpen = false;
+    document.getElementById('chatInputBox').blur();
+    return;
+  }
+  // 输入框
+  if(x>=40 && x<=W-110 && y>=H/2+130 && y<=H/2+170){
+    const inp = document.getElementById('chatInputBox');
+    inp.style.opacity = 1; inp.style.pointerEvents = 'auto'; // 唤起键盘
+    inp.focus();
+    return;
+  }
+  // 发送按钮
+  if(x>=W-100 && x<=W-40 && y>=H/2+130 && y<=H/2+170){
+    const inp = document.getElementById('chatInputBox');
+    const text = inp.value.trim();
+    if(text && friendMqtt && friendMqtt.connected){
+      friendMqtt.publish('wjw-global-chat-v1', JSON.stringify({
+        name: G.nickname || '玩家',
+        text: text
+      }));
+      inp.value = '';
+      inp.blur();
+      inp.style.opacity = 0; inp.style.pointerEvents = 'none'; // 隐藏键盘
+    }
+    return;
+  }
+  return; // 面板打开时，屏蔽大厅其他点击
+}
+
+// 点击聊天按钮展开
+if(x>=W-80 && x<=W-20 && y>=H-120 && y<=H-60){
+  G.chatOpen = true;
+  return;
+}
   if(x>=W-110 && x<=W-20 && y>=164 && y<=194){G.mode='friends';return;}
   if(inBtn(x,y,ACCOUNT_BTN)){
     if(currentUserId){
@@ -6458,6 +6925,12 @@ if(x>=40 && x<=190 && y>=790 && y<=840){
 if(G.mode==='friends'){
   if(inBtn(x,y,FRIEND_BACK_BTN)){G.mode='lobby';return;}
   if(inBtn(x,y,FRIEND_NAME_BTN)){
+  if(inBtn(x,y,FRIEND_REFRESH_BTN)){
+  broadcastGlobalScore();
+  G.milestoneMsg='📡 已向在线好友发送同步请求';
+  G.milestoneMsgT=1.5;
+  return;
+}
     const n=prompt('输入新名字（最多 8 字）：', G.nickname||'跑者');
     if(n&&n.trim()){G.nickname=n.trim().slice(0,8);markDirty();saveProgress();}
     return;
@@ -6629,12 +7102,12 @@ const btnFly=document.getElementById('btnFly');
 const isTouch=('ontouchstart'in window)||(window.matchMedia&&window.matchMedia('(pointer:coarse)').matches);
 function syncTouchButtons(){
   if(!isTouch)return;
-  const skillModes=(G.mode==='playing'||G.mode==='boss'||G.mode==='endless');
+  const skillModes=['playing','boss','endless','coin','sd'].includes(G.mode);
   if(G.mode==='playing'||G.mode==='boss'||G.mode==='coin'||G.mode==='endless'||G.mode==='sd'){
     btnJump.classList.add('show');
     btnSlide.classList.add('show');
     const ch=getChar();
-    if(skillModes&&(ch.id==='kcb'||ch.id==='ylz'||ch.id==='zyc'||ch.id==='opl'))btnFly.classList.add('show');
+    if(skillModes&&(ch.id==='kcb'||ch.id==='ylz'||ch.id==='zyc'||ch.id==='opl'||ch.id==='zzy'))btnFly.classList.add('show');
     else btnFly.classList.remove('show');
   }else{
     btnJump.classList.remove('show');
@@ -6661,6 +7134,7 @@ bindBtn(btnFly,function(){
   if(ch.id==='kcb')tryActivateFlight();
   else if(ch.id==='ylz')tryActivateJufei();
   else if(ch.id==='zyc')tryActivateDash();
+  else if(ch.id==='zzy')tryActivateZzyFreeze();
   else if(ch.id==='opl')tryActivateSoul();
 },null);
 function render(){
@@ -6720,6 +7194,14 @@ requestAnimationFrame(loop);
 
 // 启动：默认游客进入，有 token 则后台静默同步云存档
 window.addEventListener('DOMContentLoaded', () => {
+// 乐子猫工作室开场动画
+setTimeout(() => {
+  const splash = document.getElementById('studioSplash');
+  if (splash) {
+    splash.classList.add('hide');
+    setTimeout(() => splash.remove(), 1000); // 动画结束后移除元素
+  }
+}, 2000); // 停留 2 秒
   const layer = document.getElementById('loginLayer');
   if (layer) layer.style.display = 'none';
   loadProgress();
