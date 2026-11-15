@@ -79,6 +79,7 @@ window.onerror = function(msg, url, line, col, error) {
 <div class="btn" id="btnSlide">滑铲</div>
 <div class="btn" id="btnJump">跳跃</div>
 <div class="btn" id="btnFly">技能</div>
+<div class="btn" id="btnEquip" style="left:4%; bottom:24%; width:17%; max-width:92px; border-color:rgba(255,140,60,.5); color:rgba(255,200,150,.95); font-size:min(2.8vh,16px)">装备</div>
 </div>
 <script>
 (function(){
@@ -268,12 +269,13 @@ function joinMultiplayer(roomId) {
   G.mode = 'mp_lobby';
 
   mqttClient.publish('wjw-runner-v1/' + currentRoomId, JSON.stringify({
-    type: 'join',
-    userId: myId,
-    name: G.nickname || '跑者',
-    mapId: G.mapId,
-    joinTime: mpMyJoinTime
-  }));
+  type: 'join',
+  userId: myId,
+  name: G.nickname || '跑者',
+  mapId: G.mapId,
+  joinTime: mpMyJoinTime,
+  charId: G.selected // 👈 加上角色ID
+}));
 
   // 1.5 秒后以"最早进入者"为房主
   setTimeout(() => {
@@ -304,24 +306,28 @@ mqttClient.on('message', (topic, payload) => {
     if (!data || !data.userId || data.userId === mqttClient._myId) return;
     const peerId = data.userId;
 
-    if (!mpPeers[peerId]) {
-      mpPeers[peerId] = { name: data.name || '对手', ready: false, joinTime: data.joinTime || 0 };
-    } else {
-      if (data.name) mpPeers[peerId].name = data.name;
-      if (data.joinTime && data.joinTime < (mpPeers[peerId].joinTime || Infinity)) {
-        mpPeers[peerId].joinTime = data.joinTime;
-      }
-    }
+  if (!mpPeers[peerId]) {
+  mpPeers[peerId] = { 
+    name: data.name || '对手', 
+    ready: false, 
+    joinTime: data.joinTime || 0,
+    charId: data.charId || 'mdf' // 👈 接收角色ID
+  };
+} else {
+  if (data.name) mpPeers[peerId].name = data.name;
+  if (data.charId) mpPeers[peerId].charId = data.charId;
+}
 
     if (data.type === 'join') {
       // 回一个 join，让新来的知道我是谁
-      mqttClient.publish('wjw-runner-v1/' + currentRoomId, JSON.stringify({
-        type: 'join',
-        userId: mqttClient._myId,
-        name: G.nickname || '跑者',
-        mapId: G.mapId,
-        joinTime: mpMyJoinTime
-      }));
+mqttClient.publish('wjw-runner-v1/' + currentRoomId, JSON.stringify({
+  type: 'join',
+  userId: myId,
+  name: G.nickname || '跑者',
+  mapId: G.mapId,
+  joinTime: mpMyJoinTime,
+  charId: G.selected // 👈 加上角色ID
+}));
     }
     else if (data.type === 'sync_map') {
       if (data.mapId) G.mapId = data.mapId;
@@ -348,6 +354,35 @@ mqttClient.on('message', (topic, payload) => {
         mpPeers[peerId] = Object.assign(mpPeers[peerId] || {}, data);
       }
     }
+    else if (data.type === 'pvp_state') {
+  if (G.mode === 'pvp') {
+    mpPeers[peerId] = Object.assign(mpPeers[peerId] || {}, data);
+  }
+}
+else if (data.type === 'pvp_bomb') {
+  if (G.mode === 'pvp') {
+    if (data.item === 'banana') {
+      G.debuffSlowT = 2.5;
+      G.milestoneMsg = '🍌 踩到 '+(data.name||'对手')+' 扔的香蕉皮！减速！'; G.milestoneMsgT = 2;
+      G.shake = 10;
+    } else if (data.item === 'thunder') {
+      G.debuffDarkT = 2.0; // 致盲
+      G.milestoneMsg = '⚡ 被 '+(data.name||'对手')+' 劈了！视线受阻！'; G.milestoneMsgT = 2;
+      G.shake = 20;
+      beep(150,0.4,'sawtooth',0.1,50);
+    } else {
+      G.distance = Math.max(0, G.distance - 120);
+      G.milestoneMsg = '💥 被 '+(data.name||'对手')+' 炸飞了！'; G.milestoneMsgT = 2;
+      G.shake = 20;
+    }
+  }
+}
+else if (data.type === 'pvp_finish') {
+  if (G.mode === 'pvp' && !G.pvpResult) {
+    G.pvpResult = 'lose';
+    G.milestoneMsg = '💀 对手先到了终点！'; G.milestoneMsgT = 3;
+  }
+}
     else if (data.type === 'finish') {
       if (mpResult === null && G.mode === 'playing') {
         mpResult = 'lose';
@@ -405,6 +440,15 @@ function checkMpStart() {
 function broadcastMyState() {
   if (!mpActive || !mqttClient || !mqttClient.connected) return;
   if (G.mode !== 'playing' && G.mode !== 'endless') return;
+  if (G.mode === 'pvp') {
+  mqttClient.publish('wjw-runner-v1/' + currentRoomId, JSON.stringify({
+    type: 'pvp_state',
+    userId: mqttClient._myId,
+    distance: G.distance,
+    name: G.nickname || '玩家'
+  }));
+  return;
+}
   const now = Date.now();
   if (now - mpLastBroadcast < MP_INTERVAL) return;
   mpLastBroadcast = now;
@@ -954,7 +998,11 @@ const CHARS=[
 {id:'ylz_turtle',name:'老鳖',price:1000,premium:true,skin:'#a8c090',shirt:'#6a9050',shirt2:'#3a6030',pants:'#4a7038',hair:'#3a5028',shoe:'#7a9050',hairStyle:'turtle'}]},
 {id:'opl',name:'欧破路',price:4500,tag:'灵体分身 · 10s',skin:'#ffd9c0',shirt:'#4a9eff',shirt2:'#1a5fb0',pants:'#1a2a50',hair:'#2a1a3a',shoe:'#a0d0ff',build:1.0,hairStyle:'short',jumpMul:1,slideBonus:0,extraJump:0,coinRange:1.1,skins:[
 {id:'opl_default',name:'灵体',price:0,skin:'#ffd9c0',shirt:'#4a9eff',shirt2:'#1a5fb0',pants:'#1a2a50',hair:'#2a1a3a',shoe:'#a0d0ff'},
-{id:'opl_phantom',name:'幽魂',price:400,skin:'#c0d8ff',shirt:'#7eb0ff',shirt2:'#3a6ab0',pants:'#2a3a70',hair:'#8a9ec0',shoe:'#c0e0ff'}]}
+{id:'opl_phantom',name:'幽魂',price:400,skin:'#c0d8ff',shirt:'#7eb0ff',shirt2:'#3a6ab0',pants:'#2a3a70',hair:'#8a9ec0',shoe:'#c0e0ff'}]},
+{id:'zxf',name:'张雪峰',price:5000,tag:'考研教父',skin:'#ffe0c4',shirt:'#1e3a8a',shirt2:'#0f172a',pants:'#1a1a1a',hair:'#222222',shoe:'#4a4a4a',build:1.05,hairStyle:'short',jumpMul:1,slideBonus:0,coinRange:1.2,extraJump:0,skins:[
+{id:'zxf_default',name:'经典',price:0,skin:'#ffe0c4',shirt:'#1e3a8a',shirt2:'#0f172a',pants:'#1a1a1a',hair:'#222222',shoe:'#4a4a4a'}]},
+{id:'kang',name:'康神',price:6000,tag:'赛博神明',skin:'#ffd2c0',shirt:'#ffffff',shirt2:'#cccccc',pants:'#555555',hair:'#111111',shoe:'#222222',build:1.02,hairStyle:'short',jumpMul:1,slideBonus:0,coinRange:1.0,extraJump:0,skins:[
+{id:'kang_default',name:'降维打击',price:0,skin:'#ffd2c0',shirt:'#ffffff',shirt2:'#cccccc',pants:'#555555',hair:'#222222',shoe:'#222222'}]},
 ];
 const MAPS=[
 {id:'city',name:'霓虹都市',tag:'经典平衡',feature:'标准速度 · 全息方块',specialName:'全息方块',speedMul:1,spawnMul:1,coinRate:1,coinValue:1,slideMul:1,jumpMul:1,comboWindow:1.8,comboStep:8,scoreMul:1,sky:['#060a1a','#141e48','#382a63','#6d3a68','#9c4a5e','#1a1030'],stops:[0,.3,.55,.76,.86,1],ground:['#141a3a','#070a16'],groundLine:'#5fdcff',stripe:'rgba(79,209,255,0.16)',stripe2:'rgba(79,209,255,0.07)',stripe3:'rgba(79,209,255,0.045)',hills:'#161c3f',hillEdge:'#4a6bd6',backdrop:'#0e1330',win1:'rgba(120,200,255,0.42)',win2:'rgba(255,190,120,0.34)',hasMoon:true,hasStars:true,moonColor:'rgba(255,242,215,0.96)',moonGlow:'rgba(255,220,170,0.85)',moonY:118,ambient:null,bgStyle:'city'},
@@ -979,12 +1027,31 @@ const PETS=[
 {id:'phoenix',name:'不死鸟',price:3000,emoji:'🔥',desc:'每 800 米免费冲刺',passive:{autoRush:true}, evoEmoji:'🦅', evoName:'九天玄凤', evoDesc:'每 500 米免费冲刺', evoPrice:5000, evoPassive:{autoRush:true, rushDist:500}},
 {id:'unicorn',name:'独角兽',price:5000,emoji:'🦄',desc:'金币 +18% · 跳跃 +5%',passive:{coinMul:1.18,jumpMul:1.05}, evoEmoji:'🦄', evoName:'圣光天马', evoDesc:'金币 +40% · 跳跃 +10%', evoPrice:8000, evoPassive:{coinMul:1.4,jumpMul:1.1}}];
 const SEASON_REWARDS = [
-  {lv:1, xp:1000, type:'coin', amount:800, name:'800 金币'},
-  {lv:2, xp:3000, type:'wish', amount:1, name:'1 心愿币'},
-  {lv:3, xp:6000, type:'coin', amount:2000, name:'2000 金币'},
-  {lv:4, xp:10000, type:'shard', amount:3, name:'3 神话碎片'},
-  {lv:5, xp:15000, type:'wish', amount:2, name:'2 心愿币'},
-  {lv:6, xp:25000, type:'crystal', amount:1, name:'1 神话水晶'}
+  {lv:1, xp:500, type:'coin', amount:1000, name:'1000 金币'},
+  {lv:2, xp:1500, type:'wish', amount:1, name:'1 心愿币'},
+  {lv:3, xp:3000, type:'coin', amount:2500, name:'2500 金币'},
+  {lv:4, xp:5000, type:'shard', amount:2, name:'2 神话碎片'},
+  {lv:5, xp:8000, type:'wish', amount:2, name:'2 心愿币'},
+  {lv:6, xp:12000, type:'coin', amount:4000, name:'4000 金币'},
+  {lv:7, xp:17000, type:'shard', amount:3, name:'3 神话碎片'},
+  {lv:8, xp:23000, type:'crystal', amount:1, name:'1 神话水晶'},
+  {lv:9, xp:30000, type:'coin', amount:6000, name:'6000 金币'},
+  {lv:10, xp:40000, type:'wish', amount:3, name:'3 心愿币'},
+  {lv:11, xp:52000, type:'coin', amount:8000, name:'8000 金币'},
+  {lv:12, xp:66000, type:'shard', amount:5, name:'5 神话碎片'},
+  {lv:13, xp:82000, type:'wish', amount:4, name:'4 心愿币'},
+  {lv:14, xp:100000, type:'coin', amount:12000, name:'1.2万 金币'},
+  {lv:15, xp:120000, type:'crystal', amount:1, name:'1 神话水晶'},
+  {lv:16, xp:145000, type:'coin', amount:15000, name:'1.5万 金币'},
+  {lv:17, xp:175000, type:'wish', amount:5, name:'5 心愿币'},
+  {lv:18, xp:210000, type:'shard', amount:10, name:'10 神话碎片'},
+  {lv:19, xp:260000, type:'coin', amount:20000, name:'2万 金币'},
+  {lv:20, xp:350000, type:'crystal', amount:3, name:'🏆 3 神话水晶'}
+];
+const EQUIPS = [
+  { id:'boots', name:'疾风战靴', icon:'👟', desc:'基础跑速 +3 / 级\n[Lv.3解锁] 完美闪避时获得极速冲刺', maxLv:10, basePrice:1000, priceMul:1.5 },
+  { id:'armor', name:'金刚战甲', icon:'🥋', desc:'护盾持续 +0.2秒 / 级\n[Lv.5解锁] 护盾破碎时震碎全屏障碍物', maxLv:10, basePrice:1200, priceMul:1.5 },
+  { id:'ring', name:'聚财神戒', icon:'💍', desc:'金币收益 +3% / 级\n[Lv.8解锁] 吃到磁铁时触发双倍金币', maxLv:10, basePrice:1500, priceMul:1.5 }
 ];
 const UPGRADES=[
 {id:'jump',name:'弹跳强化',icon:'🦘',desc:'跳跃高度 +2% / 级 (满级额外+20%)',maxLv:50,basePrice:200,priceMul:1.15},
@@ -1047,7 +1114,18 @@ const ACHIEVEMENTS=[
 {id:'sd500',name:'风驰电掣',icon:'💨',desc:'极限时速跑过 500 米',reward:160,check:s=>s.sdBest>=500},
 {id:'sd1000',name:'音速狂奔',icon:'🚀',desc:'极限时速跑过 1000 米',reward:340,check:s=>s.sdBest>=1000},
 {id:'soul1',name:'灵魂出窍',icon:'👻',desc:'使用欧破路灵体一次',reward:70,check:s=>s.soulCount>=1},
-{id:'soul10',name:'灵魂主宰',icon:'💠',desc:'累计使用灵体 10 次',reward:180,check:s=>s.soulCount>=10}];
+{id:'soul10',name:'灵魂主宰',icon:'💠',desc:'累计使用灵体 10 次',reward:180,check:s=>s.soulCount>=10},
+// ===== 新角色与新玩法成就 =====
+{id:'zxf_first',name:'考研上岸',icon:'📚',desc:'使用张雪峰完成一局游戏',reward:100,check:s=>s.zxfRuns>=1},
+{id:'zxf_skill10',name:'巧乐滋狂热',icon:'🍦',desc:'使用张雪峰释放 10 次技能',reward:200,check:s=>s.zxfSkill>=10},
+{id:'kang_first',name:'赛博降临',icon:'💻',desc:'使用康神完成一局游戏',reward:100,check:s=>s.kangRuns>=1},
+{id:'kang_flower10',name:'兰花草大户',icon:'🌿',desc:'累计使用 10 株兰花草',reward:300,check:s=>s.kangFlowers>=10},
+{id:'kang_fat5',name:'谁说我胖了？',icon:'😡',desc:'在开播时选择“胖了” 5 次',reward:150,check:s=>s.kangFat>=5},
+{id:'kang_notfat5',name:'酱味大鸡真香',icon:'🍗',desc:'在开播时选择“没胖” 5 次',reward:150,check:s=>s.kangNotFat>=5},
+{id:'zombie_win1',name:'逃出生天',icon:'🚁',desc:'在丧尸围城中首次成功撤离',reward:200,check:s=>s.zombieWins>=1},
+{id:'zombie_kill200',name:'生化清道夫',icon:'🔫',desc:'在丧尸围城中累计击杀 200 个丧尸',reward:300,check:s=>s.zombieKills>=200},
+{id:'pvp_win1',name:'峡谷初胜',icon:'💣',desc:'在互坑大乱斗中首次获得第一名',reward:200,check:s=>s.pvpWins>=1},
+{id:'pvp_win10',name:'大乱斗恶霸',icon:'👑',desc:'在互坑大乱斗中累计获胜 10 次',reward:500,check:s=>s.pvpWins>=10},];
 const DAILY_POOL=[
 {id:'d_dist800',name:'跑过 800 米',desc:'单局内跑过 800 米',reward:200,check:()=>Math.floor(G.distance/10)>=800},
 {id:'d_coin40',name:'吃 40 金币',desc:'单局内吃到 40 枚金币',reward:200,check:()=>G.coins>=40},
@@ -1082,6 +1160,10 @@ slowMoBonus:0,  // 慢动作期间的额外金币加成
   charSkins:{},ownedSkins:[],
   skinPanel:{open:false,charId:null},
   upgrades:{jump:0,coin:0,shield:0,speed:0,startShield:0},
+  equips:{boots:0, armor:0, ring:0},
+  equipActiveCD:0, // 装备主动技能冷却
+  arcadeTime:0, arcadeHp:0, arcadeEnemies:[], arcadeBullets:[], arcadeState:'', arcadeReward:0,
+  zxfCD:0, kang1CD:0, kangFlower:0, zxfLipT:0, kangLiveT:0, last500Check:0,
   achClaimed:[],achSeen:[],
   daily:{date:'',id:'',done:false,claimed:false},
   mapsUsed:[],growthTab:'upgrade',growScroll:0,
@@ -1104,7 +1186,10 @@ stats:{
     portalCount:0,jufeiCount:0,charsOwned:1,skinsOwned:0,
     bossRuns:0,bossBest:0,coinRushRuns:0,coinRushBest:0,
     weathersSeen:0,petsOwned:1,mythOwned:0,endlessBest:0,endlessLives:0,
-    sdRuns:0,sdBest:0,soulCount:0
+    sdRuns:0,sdBest:0,soulCount:0,
+    zxfRuns:0, zxfSkill:0, 
+kangRuns:0, kangFlowers:0, kangFat:0, kangNotFat:0,
+zombieWins:0, zombieKills:0, pvpWins:0
   }
 };
 const P={x:PLAYER_X,y:GROUND_Y,vy:0,onGround:true,jumps:0,coyote:0,
@@ -1196,6 +1281,8 @@ G.nickname = ls.getItem('mdf_nickname') || '';
       if(!cur||!G.ownedSkins.includes(cur))G.charSkins[c.id]=def;
     });
     const up=ls.getItem('mdf_upgrades');
+    const eq=ls.getItem('mdf_equips');
+if(eq){ const o=JSON.parse(eq); for(const k in G.equips){ if(typeof o[k]==='number') G.equips[k]=o[k]; } }
     if(up){
   const o=JSON.parse(up);
   UPGRADES.forEach(u=>{
@@ -1238,6 +1325,7 @@ function saveProgressOld(){
     ls.setItem('mdf_map_id',G.mapId);
     ls.setItem('mdf_parkour_best',String(G.best));
     ls.setItem('mdf_upgrades',JSON.stringify(G.upgrades));
+    ls.setItem('mdf_equips', JSON.stringify(G.equips));
     ls.setItem('mdf_ach_claimed',G.achClaimed.join(','));
     ls.setItem('mdf_ach_seen',G.achSeen.join(','));
     ls.setItem('mdf_stats',JSON.stringify(G.stats));
@@ -1312,9 +1400,9 @@ function getJumpBonus(){
 }
 function getCoinBonus(){
   const w=getWeather(),p=getPet();
-  return (1+G.upgrades.coin*0.05)*(w.coinMul||1)*(p.passive.coinMul||1);
+  return (1+G.upgrades.coin*0.05 + (G.equips.ring||0)*0.03)*(w.coinMul||1)*(p.passive.coinMul||1);
 }
-function getShieldDuration(){return 1.3+G.upgrades.shield*0.4;}
+function getShieldDuration(){return 1.3+G.upgrades.shield*0.4 + (G.equips.armor||0)*0.2;}
 function upgradePrice(i){const u=UPGRADES[i];return Math.floor(u.basePrice*Math.pow(u.priceMul,G.upgrades[u.id]));}
 function checkAchievements(){
   G.stats.mapsUsed=G.mapsUsed.length;
@@ -1462,15 +1550,22 @@ function drawStatBar(x,y,w,label,ratio,rgb){
   roundRect(bx,y-6,fw,12,6);ctx.fill();ctx.restore();
 }
 const ACCOUNT_BTN={x:W-110,y:128,w:90,h:30};
-const L_START={x:30,y:722,w:148,h:52};
-const L_ENDLESS={x:196,y:722,w:148,h:52};
-const L_DUEL={x:362,y:722,w:148,h:52};
-const L_BOSS={x:30,y:782,w:148,h:52};
-const L_COIN={x:196,y:782,w:148,h:52};
-const L_MAP={x:362,y:782,w:148,h:52};
-const L_SD={x:30,y:842,w:148,h:52};
-const L_SHOP={x:196,y:842,w:148,h:52};
-const L_GROW={x:362,y:842,w:148,h:52};
+// 超大主按钮 (经典跑酷)
+const B_CLASSIC = {x: 40, y: 820, w: 460, h: 76};
+// 胶囊副按钮 (两排)
+const B_ENDLESS = {x: 40, y: 650, w: 146, h: 56};
+const B_BOSS    = {x: 197, y: 650, w: 146, h: 56};
+const B_ZOMBIE  = {x: 354, y: 650, w: 146, h: 56};
+const B_COIN    = {x: 40, y: 718, w: 146, h: 56};
+const B_SPEED   = {x: 197, y: 718, w: 146, h: 56};
+const B_PVP     = {x: 354, y: 718, w: 146, h: 56};
+// 侧边悬浮图标
+const B_SHOP    = {x: 20, y: 360, w: 70, h: 70};
+const B_GROW    = {x: 20, y: 450, w: 70, h: 70};
+const B_MAP     = {x: 20, y: 540, w: 70, h: 70};
+const B_RANK    = {x: 450, y: 360, w: 70, h: 70};
+const B_MP      = {x: 450, y: 450, w: 70, h: 70};
+const B_EQUIP   = {x: 450, y: 540, w: 70, h: 70};
 const SHOP_BACK={x:30,y:910,w:180,h:50};
 const MAP_BACK={x:30,y:910,w:180,h:50};
 const GROW_BACK={x:30,y:910,w:180,h:50};
@@ -1489,9 +1584,9 @@ const SKIN_PANEL={x:30,y:180,w:480,h:540};
 const SKIN_CLOSE={x:180,y:670,w:180,h:48};
 const ACH_TOP=148,ACH_BOT=H-100,ACH_H=60,ACH_PER=68;
 function inBtn(x,y,b){return x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h;}
-function cardRect(i){const CW=220,CH=116,GX=30,GY=10,X0=30,Y0=82;const col=i%2,row=Math.floor(i/2);return{x:X0+col*(CW+GX),y:Y0+row*(CH+GY),w:CW,h:CH};}
+function cardRect(i){const CW=220,CH=92,GX=30,GY=8,X0=30,Y0=82;const col=i%2,row=Math.floor(i/2);return{x:X0+col*(CW+GX),y:Y0+row*(CH+GY),w:CW,h:CH};}
 function skinBtnRect(i){const r=cardRect(i);return{x:r.x+8,y:r.y+r.h-26,w:62,h:20};}
-function mapCardRect(i){return{x:30,y:150+i*114,w:480,h:100};}
+function mapCardRect(i){return{x:30,y:140+i*140,w:480,h:125};}
 function upgBuyRect(i){return{x:330,y:160+i*142+80,w:160,h:42};}
 function achClaimRect(i){return{x:370,y:160+i*ACH_PER+14,w:120,h:32};}
 function skinCardRect(i){return{x:60,y:270+i*118,w:420,h:105};}
@@ -1533,7 +1628,7 @@ function startGame(keepWeather){
   MIDBOSS.triggered = false;
   MIDBOSS.timer = 0;
   MIDBOSS.bossY = -200;
-  G.baseSpeed=200 + (G.upgrades.speed || 0) * 5; // 每级加5点基础速度
+  G.baseSpeed=200 + (G.upgrades.speed || 0) * 5 + (G.equips.boots || 0) * 3; // 每级加5点基础速度
 G.speed=G.baseSpeed;
   resetRunState();
   if(G.upgrades.startShield && G.upgrades.startShield > 0) {
@@ -1590,7 +1685,7 @@ MIDBOSS.active = false;
     return;
   }
   if(ch.id==='zzy'&&G.reviveCD<=0){
-    G.reviveCD=Math.max(10,20-(getPet().passive.reviveCDMinus||0));
+    G.reviveCD=Math.max(10,25-(getPet().passive.reviveCDMinus||0));
     G.stats.usedRevive++;G.shield=0;G.invulnT=2.5;G.shake=20;
     const isFlame=ch.skinId==='zzy_flame';
     G.milestoneMsg=isFlame?'🔥 火莲重生！':'✨ 张子阳 原地复活！';
@@ -1644,13 +1739,16 @@ MIDBOSS.active = false;
       Math.random()<0.5?'#ff5c7a':'#ffd93d',rand(3,7),950);
   }
   const score=displayMeters(),map=getMap();
-  G.seasonXP += Math.floor(score * 0.8) + 50; // 结算获得赛季经验
+  G.seasonXP += Math.floor(score * 2.0) + 100; // 经验翻倍
   if(G.mode==='endlessdead'){
     if(score>G.stats.endlessBest){G.stats.endlessBest=score;G.newRecord=true;}else G.newRecord=false;
   }else{
     if(score>G.best){G.best=score;G.newRecord=true;}else G.newRecord=false;
   }
   G.stats.runs++;
+  const _ch = getChar();
+if(_ch.id==='zxf') G.stats.zxfRuns++;
+if(_ch.id==='kang') G.stats.kangRuns++;
   if(score>G.stats.maxDist)G.stats.maxDist=score;
   if(G.comboMax>G.stats.maxCombo)G.stats.maxCombo=G.comboMax;
   if(G.coins>G.stats.maxSessionCoins)G.stats.maxSessionCoins=G.coins;
@@ -1664,7 +1762,7 @@ broadcastGlobalScore(); // 广播排行榜
 }
 function canFly(){
   const ch=getChar();
-  return ch.id==='kcb' && ['playing','boss','endless','coin','sd'].includes(G.mode) && G.flightT<=0 && G.flightCD<=0 && !P.flying;
+  return ch.id==='kcb' && ['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode) && G.flightT<=0 && G.flightCD<=0 && !P.flying;
 }
 function tryActivateFlight(){
   initAudio();if(!canFly())return;
@@ -1684,7 +1782,7 @@ function tryActivateFlight(){
 }
 function tryActivateJufei(){
   initAudio();
-  if(!['playing','boss','endless','coin','sd'].includes(G.mode))return;
+  if(!['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) return;
   const ch=getChar();
   if(ch.id!=='ylz'||G.jufeiCD>0||G.jufeiShell)return;
   const isTurtle=ch.skinId==='ylz_turtle';
@@ -1703,56 +1801,111 @@ function tryActivateJufei(){
   G.milestoneMsg=isTurtle?'🐢 聚菲！清除前方 300 米':'🪨 聚菲！石头开路 300 米';
   G.milestoneMsgT=1.8;G.shake=14;
   beep(360,0.14,'square',0.06,700);
-  setTimeout(()=>beep(620,0.16,'triangle',0.06,1000),80);
-  setTimeout(()=>beep(980,0.2,'triangle',0.06,1400),200);
   const f=checkAchievements();if(f.length)G.newAch=f;markDirty();
+}
+function tryActivateEquipSkill(){
+  initAudio();
+  if(!['playing','boss','endless'].includes(G.mode)) return;
+  if(G.equipActiveCD > 0) return;
+
+  // 找出当前等级最高的装备（优先触发高阶技能）
+  if(G.equips.ring >= 10) {
+    // 💍 神戒技能
+    G.equipActiveCD = 15;
+    G.doubleT = Math.max(G.doubleT, 5);
+    G.magnetT = Math.max(G.magnetT, 5);
+    G.milestoneMsg = '💍 贪婪之手！吸金+双倍！'; G.milestoneMsgT = 2;
+    beep(1200,0.2,'sine',0.08,1800);
+    for(let i=0; i<30; i++) addParticle(rand(0,W), rand(0,H), rand(-400,400), rand(-400,400), rand(0.3,0.6), '#ffd93d', rand(2,5), 0);
+    return;
+  }
+  if(G.equips.armor >= 8) {
+    // 🥋 战甲技能
+    G.equipActiveCD = 15;
+    G.milestoneMsg = '🥋 叹息之墙！粉碎前方！'; G.milestoneMsgT = 2;
+    G.shake = 20;
+    beep(200,0.3,'sawtooth',0.1,50);
+    for(let j=obstacles.length-1; j>=0; j--){
+      if(obstacles[j].x > 0 && obstacles[j].x < W*1.2){
+        for(let k=0; k<15; k++) addParticle(obstacles[j].x, obstacles[j].y, rand(-300,300), rand(-300,300), rand(0.4,0.8), '#7ee0ff', rand(2,6), 0);
+        obstacles.splice(j, 1);
+      }
+    }
+    return;
+  }
+  if(G.equips.boots >= 5) {
+    // 👟 战靴技能
+    G.equipActiveCD = 15;
+    G.invulnT = Math.max(G.invulnT, 0.8); // 0.8秒无敌瞬移
+    P.dashOffset += 200; // 瞬间向前突进200像素
+    G.milestoneMsg = '👟 风神步！穿梭无敌！'; G.milestoneMsgT = 2;
+    beep(1500,0.15,'triangle',0.06,1000);
+    for(let i=0; i<20; i++) addParticle(P.x+P.dashOffset, P.y-rand(0,60), rand(-200,50), rand(-50,50), rand(0.2,0.5), '#ffffff', rand(2,4), 0);
+    return;
+  }
+  alert('❌ 装备等级不足，请前往铁匠铺升级！');
+}
+// 张雪峰主动：吃巧乐滋
+function tryActivateZXF(){
+  initAudio();
+  if(!['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) return;
+  const ch = getChar();
+  if(ch.id !== 'zxf' || G.zxfCD > 0) return;
+  
+  G.zxfCD = 15; 
+  G.invulnT = Math.max(G.invulnT, 5.0); 
+  G.dashSpeedT = Math.max(G.dashSpeedT, 5.0); 
+  G.milestoneMsg = '🍦 巧乐滋！极速无敌！'; G.milestoneMsgT = 2;
+  G.stats.zxfSkill++;
+  G.shake = 15;
+  beep(1200, 0.2, 'triangle', 0.08, 1600);
+}
+
+// 康神主动：开播
+function tryActivateKang1(){
+  initAudio();
+  if(!['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) return;
+  const ch = getChar();
+  if(ch.id !== 'kang' || G.kang1CD > 0) return;
+  
+  G.kang1CD = 20;
+  G.kangLiveT = 3.0; // 持续3秒
+  G.slowMoT = Math.max(G.slowMoT, 3.0); // 借用时间暂停
+  G.milestoneMsg = '📺 开播啦！弹幕在刷什么？'; G.milestoneMsgT = 2;
+  beep(880, 0.2, 'square', 0.08, 1000);
 }
 function tryActivateZzyFreeze(){
   initAudio();
-  if(!['playing','boss','endless'].includes(G.mode)) return;
+  if(!['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) return;
   const ch=getChar();
   if(ch.id!=='zzy' || G.zzyFreezeT>0 || G.zzyFreezeCD>0 || P.flying) return;
-  
   G.zzyFreezeT = 3.0; 
+  G.invulnT = Math.max(G.invulnT, 3.0); // 凝滞期间无敌
   G.zzyFreezeCD = 12.0; 
-  
-  // 👇 核心判断：火莲皮肤专属文案
   const isFlame = ch.skinId === 'zzy_flame';
-  G.milestoneMsg = isFlame ? '🔥 业火焚天！烈焰推土机！' : '⚡ 雷神降临！无敌推土机！'; 
+  G.milestoneMsg = isFlame ? '🔥 业火焚天！' : '⚡ 雷神降临！'; 
   G.milestoneMsgT = 1.5;
   G.shake = 15;
-  
   if (isFlame) {
-    // 火莲专属音效：低沉的轰鸣+火焰燃烧
     beep(80, 0.5, 'sawtooth', 0.1, 30);
     setTimeout(()=>beep(400, 0.3, 'sawtooth', 0.08, 100), 150);
   } else {
-    // 原版雷神音效
     beep(150, 0.4, 'sawtooth', 0.08, 50);
     setTimeout(()=>beep(1200, 0.2, 'triangle', 0.06, 800), 150);
   }
-  
-  // 👇 核心判断：火莲皮肤专属粒子
   for(let i=0; i<40; i++){
-    const col = isFlame 
-      ? (Math.random()<0.5 ? '#d94fd9' : '#ff2020') // 紫红业火
-      : (Math.random()<0.5 ? '#7ec8ff' : '#ffffff'); // 原版蓝雷
+    const col = isFlame ? (Math.random()<0.5 ? '#d94fd9' : '#ff2020') : (Math.random()<0.5 ? '#7ec8ff' : '#ffffff');
     addParticle(rand(0,W), rand(0,H), rand(-50,50), rand(-50,50), rand(0.3,0.8), col, rand(2,5), 0);
   }
 }
 function tryActivateDash(){
   initAudio();
-  if(!['playing','boss','endless','coin','sd'].includes(G.mode))return;
+  if(!['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) return;
   const ch=getChar();
   if(ch.id!=='zyc'||G.dashT>0||G.zycCD>0||P.flying)return;
-  G.dashT=DASH_DURATION;
-G.zycCD=10; // 被动生效：冷却时间缩减为 10 秒
-P.dashing=true;
-
-// 被动生效：冲刺后自动获得 8 秒磁铁效果
-G.magnetT = Math.max(G.magnetT, 8); 
+  G.dashT=DASH_DURATION;G.zycCD=DASH_CD;P.dashing=true;
+  G.invulnT=Math.max(G.invulnT, DASH_DURATION + 0.5); // 冲刺期间无敌
   P.vy=0;P.sliding=false;P.slideT=0;P.onGround=true;
-  G.invulnT=Math.max(G.invulnT,DASH_DURATION+0.1);
   G.milestoneMsg='⚡ 疾影突进！';G.milestoneMsgT=1.0;
   beep(880,0.12,'triangle',0.06,1500);
   setTimeout(()=>beep(1180,0.14,'triangle',0.06,1900),80);
@@ -1764,10 +1917,11 @@ G.magnetT = Math.max(G.magnetT, 8);
 }
 function tryActivateSoul(){
   initAudio();
-  if(!['playing','boss','endless','coin','sd'].includes(G.mode))return;
+  if(!['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) return;
   const ch=getChar();
   if(ch.id!=='opl'||G.soulCD>0||G.soulActive||P.flying)return;
   G.soulActive=true;G.soulT=8;G.soulCD=15;
+  G.invulnT = Math.max(G.invulnT, 8.0); // 灵体期间无敌
   G.stats.soulCount=(G.stats.soulCount||0)+1;
   G.milestoneMsg='👻 灵体分身！本体留在原地';G.milestoneMsgT=2;
   G.shake=8;
@@ -1788,6 +1942,8 @@ function makeSaw(){const r=28,cy=GROUND_Y-70;return{type:'saw',x:W+60,y:cy-r,w:r
 function spawnObstacle(){
   const map=getMap();
   let o=null;
+  
+  // 1. 先判定是否生成地图专属障碍物
   if(sRand()<0.28){
     if(map.id==='city')o=makeHologram();
     else if(map.id==='desert')o=makeCactus();
@@ -1795,36 +1951,59 @@ function spawnObstacle(){
     else if(map.id==='lava')o=makeFireball();
     else if(map.id==='sakura')o=makePetalWind();
   }
+  
+  // 2. 如果没有生成专属障碍，则随机生成通用障碍
   if(!o){
     const r=sRand();
-    if(r<0.30){const h=sRand(34,56),w=sRand(28,44);o={type:'box',x:W+60,y:GROUND_Y-h,w,h};}
-    else if(r<0.42){const h=sRand(60,80),w=sRand(28,40);o={type:'box',x:W+60,y:GROUND_Y-h,w,h,tall:true};}
-    else if(r<0.52){const h1=sRand(28,42),h2=sRand(28,42),w=sRand(28,40);o={type:'doublebox',x:W+60,y:GROUND_Y-h1-h2,w,h:h1+h2,h1,h2};}
-    else if(r<0.68){const w=sRand(50,88);o={type:'spikes',x:W+60,y:GROUND_Y-22,w,h:22};}
-    else if(r<0.84){o=makeSaw();}
-    // 新增：只有滑铲能过的悬空激光门
-else if(r<0.94){
-  const w=sRand(32,45);
-  // 底部距离地面 32 像素，刚好卡住站立高度（54），滑铲高度（25）能过
-  o={type:'slidebar',x:W+60,y:GROUND_Y-400,w,h:400-32}; 
+    // 【关键修改】概率重新分配，更多空中和特殊障碍物
+    if(r<0.22){ // 普通箱子
+      const h=sRand(34,56),w=sRand(28,44);
+      o={type:'box',x:W+60,y:GROUND_Y-h,w,h};
+    } else if(r<0.32){ // 高箱子
+      const h=sRand(60,80),w=sRand(28,40);
+      o={type:'box',x:W+60,y:GROUND_Y-h,w,h,tall:true};
+    } else if(r<0.42){ // 双层箱子
+      const h1=sRand(28,42),h2=sRand(28,42),w=sRand(28,40);
+      o={type:'doublebox',x:W+60,y:GROUND_Y-h1-h2,w,h:h1+h2,h1,h2};
+    } else if(r<0.54){ // 地刺
+      const w=sRand(50,88);
+      o={type:'spikes',x:W+60,y:GROUND_Y-22,w,h:22};
+    } else if(r<0.68){ // 地面电锯
+      o=makeSaw();
+    } else if(r<0.76){ // 低横杆 (需滑铲)
+      const w=sRand(64,100),h=20;
+      o={type:'lowbar',x:W+60,y:GROUND_Y-62,w,h};
+    } else if(r<0.86){ // 👈 激光柱 (顶天立地)
+      const w=sRand(32,45);
+      o={type:'slidebar',x:W+60,y:0,w,h:GROUND_Y-32};
+    } else if(r < 0.9) { // 高空无人机
+  const w=40,by=GROUND_Y-sRand(140,220); 
+  o={type:'drone',x:W+60,baseY:by,y:by-w/2,w,h:w,bobT:sRand()*6.28,bobA:sRand(4,8)};
+} else { // 👈 【新增】悬浮地雷 (挂在天上，专治乱跳)
+  const w=36;
+  // 高度设置在 GROUND_Y - 90 左右，正好是跳跃最容易碰到的位置
+  o={type:'skymine',x:W+60,y:GROUND_Y-sRand(80,110),w,h:w,phase:sRand()*6.28};
 }
-    else{const w=40,by=GROUND_Y-110;o={type:'drone',x:W+60,baseY:by,y:by-w/2,w,h:w,bobT:sRand()*6.28,bobA:sRand(4,8)};}
   }
-  for(let i=0;i<coins.length;i++){const c=coins[i];if(o.x<c.x+36&&o.x+o.w>c.x-36){o.x=c.x+46;break;}}
-  // === 防连体婴保护：确保和前一个障碍物有安全距离 ===
-if (obstacles.length > 0) {
-  const lastO = obstacles[obstacles.length - 1];
-  // 基础安全距离（随速度动态增加，但设个上限）
-  const minGap = 120 + Math.min(80, G.speed * 0.15); 
-  if (o.x < lastO.x + lastO.w + minGap) {
-    // 稍微推开一点，但不能推得太离谱，否则会卡在屏幕外
-    const randomExtra = rand(10, 60);
-    o.x = lastO.x + lastO.w + minGap + randomExtra; 
+
+  // 3. 【组合双杀】有 30% 几率在前方再生成一个空中障碍物
+  if(Math.random() < 0.3) {
+    const w = 40;
+    const by = GROUND_Y - sRand(180, 260); // 放在极高处
+    const o2 = {type:'drone', x:o.x + sRand(200, 350), baseY:by, y:by-w/2, w, h:w, bobT:sRand()*6.28, bobA:sRand(4,8)};
+    obstacles.push(o2);
   }
-}
-// ==============================================
+  
+  // 防止障碍物和金币重叠
+  for(let i=0;i<coins.length;i++){
+    const c=coins[i];
+    if(o.x<c.x+36&&o.x+o.w>c.x-36){o.x=c.x+46;break;}
+  }
+  
   obstacles.push(o);
-  G.nextSpawn=G.speed*(1.6+sRand()*0.9)*(map.spawnMul||1);
+  
+  // 【关键修改】生成间隔缩短，让障碍物更多
+  G.nextSpawn = G.speed * (1.4 + sRand() * 0.8) * (map.spawnMul || 1);
 }
 function spawnCoins(){
   const map=getMap();
@@ -1892,6 +2071,7 @@ function teleportToRandomMap(){
 function playerBox(){const px=P.x+P.dashOffset;if(P.sliding)return{x:px-12,y:P.y-25,w:24,h:25};return{x:px-13,y:P.y-54,w:26,h:54};}
 function aabb(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;}
 function mapObstacleBox(o){
+if(o.type==='skymine') return {x:o.x+4, y:o.y+4, w:o.w-8, h:o.h-8};
   // 新增这一行：悬空激光门判定
   if(o.type==='slidebar') return {x:o.x+2, y:o.y, w:o.w-4, h:o.h+4};
   
@@ -2002,7 +2182,11 @@ if (G.slowMoT > 0) {
     if (mpStartCountdown <= 0) {
       mpStartCountdown = 0;
       G.mapId = 'city';
-      startGame(true);       // keepWeather=true，保留房主下发的天气
+     if (G.mpPvpMode) {
+        startPvp(); // 👈 如果是互坑模式，进入互坑
+      } else {
+        startGame(true); // 👈 否则进入经典
+      }
       mpResult = null;
       mpLastDiff = 0;
     }
@@ -2013,6 +2197,12 @@ if (G.slowMoT > 0) {
   if(G.mode==='duel'){updateDuel(dt);return;}
   if(G.mode==='boss'||G.mode==='bossdead'){updateBoss(dt);return;}
   if(G.mode==='coin'||G.mode==='coindone'){updateCoinRush(dt);return;}
+  if(G.mode==='zombie'||G.mode==='zombiedead'||G.mode==='zombiewin'){updateZombie(dt);return;}
+  if(G.mode==='arcade'){updateArcade(dt);return;}
+  if(G.mode==='arcade_menu'){ updateArcadeMenu(dt); return; }
+if(G.mode==='flappy'){ updateFlappy(dt); return; }
+if(G.mode==='slot'){ updateSlot(dt); return; }
+if(G.mode==='pvp'||G.mode==='pvpdead'){updatePvp(dt);return;}
   if(G.mode==='sd'||G.mode==='sddead'){updateSpeedDemon(dt);return;}
   G.time+=dt;
   updateWeatherFx(dt);
@@ -2045,7 +2235,10 @@ if(G.mode==='lobby'){
     if(G.mode==='grow'){
       for(let i=G.growFx.length-1;i>=0;i--){G.growFx[i].t-=dt;if(G.growFx[i].t<=0)G.growFx.splice(i,1);}
       for(let i=G.chestFx.length-1;i>=0;i--){G.chestFx[i].t-=dt;if(G.chestFx[i].t<=0)G.chestFx.splice(i,1);}
-      if(G.growthTab==='achievement')G.growScroll=clamp(G.growScroll,0,getMaxGrowScroll());else G.growScroll=0;
+      // 核心修复：允许成就和通行证都保留滑动距离！
+if(G.growthTab==='achievement') G.growScroll=clamp(G.growScroll,0,getMaxGrowScroll()); 
+else if(G.growthTab==='season') G.growScroll=clamp(G.growScroll,0,Math.max(0, SEASON_REWARDS.length * 90 - 440));
+else G.growScroll=0;
     }
     updateParticles(dt);return;
   }
@@ -2062,6 +2255,7 @@ if(G.mode==='lobby'){
   if(G.mode!=='playing'&&G.mode!=='endless')return;
   // 张子阳凝滞 CD 计算
 if(G.zzyFreezeT > 0) G.zzyFreezeT -= dt;
+if(G.equipActiveCD > 0) G.equipActiveCD -= dt;
 if(G.zzyFreezeCD > 0) G.zzyFreezeCD -= dt;
 
 let currentDt = dt;
@@ -2107,6 +2301,10 @@ if (MIDBOSS.active) {
   const ch=getChar(),map=getMap();
   if(G.flightCD>0)G.flightCD-=dt;if(G.flightCD<0)G.flightCD=0;
   if(G.reviveCD>0)G.reviveCD-=dt;if(G.reviveCD<0)G.reviveCD=0;
+  // 👇 强行加入张雪峰和康神的CD递减
+if(G.zxfCD>0) G.zxfCD -= dt;
+if(G.kang1CD>0) G.kang1CD -= dt;
+if(G.zxfLipT>0) G.zxfLipT -= dt;
   if(G.jufeiCD>0)G.jufeiCD-=dt;if(G.jufeiCD<0)G.jufeiCD=0;
   if(G.zycCD>0)G.zycCD-=dt;if(G.zycCD<0)G.zycCD=0;
   if(G.dashSpeedT>0)G.dashSpeedT-=dt;if(G.dashSpeedT<0)G.dashSpeedT=0;
@@ -2199,6 +2397,22 @@ if (MIDBOSS.active) {
   }
   if(P.jumpBuffer>0)P.jumpBuffer-=dt;
   const meters=G.distance/10;
+  if(['playing','endless','zombie','pvp'].includes(G.mode)){
+  const current500 = Math.floor(meters / 500);
+  if(current500 > (G.last500Check || 0)){
+    G.last500Check = current500;
+    const ch = getChar();
+    if(ch.id === 'zxf'){
+      G.zxfLipT = 5.0; // 紫唇
+      G.debuffSlowT = 5.0; // 减速
+      G.shield = 1;
+      G.milestoneMsg = '🥶 嘴唇发紫！获得护盾但减速！'; G.milestoneMsgT = 2;
+    } else if(ch.id === 'kang'){
+      G.kangFlower++;
+      G.milestoneMsg = '🌿 获得一株兰花草！(按Q键使用)'; G.milestoneMsgT = 2;
+    }
+  }
+}
   if(meters>=G.nextMilestone){
     G.nextMilestone+=800;G.rushT=2.6;G.stats.rushCount++;
     G.milestoneMsg='⚡ '+Math.floor(meters/800)*800+' 米  加速冲刺！';G.milestoneMsgT=2;
@@ -2302,6 +2516,11 @@ if (o.x < pbox.x + pbox.w && o.x + o.w > pbox.x && !o.dodged) {
 
   if (perfect) {
     G.slowMoT = 1.2; 
+    // 👟 战靴专属技能
+if (G.equips.boots >= 3) {
+  G.dashSpeedT = Math.max(G.dashSpeedT, 2); 
+  G.milestoneMsg = '👟 战靴发威！极速冲刺！';
+}
     G.slowMoBonus = 1; 
     G.milestoneMsg = '⚡ PERFECT 完美闪避！';
     G.milestoneMsgT = 1.5;
@@ -2332,6 +2551,17 @@ if(G.zzyFreezeT > 0){
     G.shield=0;G.invulnT=getShieldDuration();
     obstacles.splice(i,1);G.shake=10;
     beep(420,0.22,'square',0.06,200);
+    // 🥋 战甲专属技能
+if (G.equips.armor >= 5) {
+  G.milestoneMsg = '🥋 金刚震波！障碍全碎！'; G.milestoneMsgT = 1.5;
+  G.shake = 25;
+  for(let j=obstacles.length-1; j>=0; j--){
+    if(obstacles[j].x > 0 && obstacles[j].x < W){
+      for(let k=0; k<10; k++) addParticle(obstacles[j].x, obstacles[j].y, rand(-300,300), rand(-300,300), rand(0.4,0.8), '#7ee0ff', rand(2,6), 0);
+      obstacles.splice(j, 1);
+    }
+  }
+}
     for(let k=0;k<26;k++)addParticle(P.x+rand(-30,30),P.y-34+rand(-24,24),rand(-340,340),rand(-360,120),rand(0.35,0.8),Math.random()<0.5?'#7ee0ff':'#ffffff',rand(2,6),620);
     
     if(getChar().skinId === 'kcb_laoda'){
@@ -2357,7 +2587,14 @@ if(G.zzyFreezeT > 0){
       items.splice(i,1);
       G.itemFx.push({x:it.x,y:it.y,t:0.6,max:0.6,type:it.type});
       if(it.type==='shield'){G.shield=1;G.sessionShields++;G.milestoneMsg='🛡 护盾已装备';G.milestoneMsgT=1.5;beep(880,0.14,'triangle',0.055,1240);}
-else if(it.type==='magnet'){G.magnetT=8;G.stats.magnetCount++;G.milestoneMsg='🧲 磁铁 8 秒';G.milestoneMsgT=1.5;beep(760,0.14,'triangle',0.055,1120);}
+else if(it.type==='magnet'){
+  G.magnetT=8;G.stats.magnetCount++;G.milestoneMsg='🧲 磁铁 8 秒';G.milestoneMsgT=1.5;beep(760,0.14,'triangle',0.055,1120);
+  // 💍 神戒专属技能
+  if (G.equips.ring >= 8) {
+    G.doubleT = Math.max(G.doubleT, 8);
+    G.milestoneMsg = '💍 神戒发光！金币双倍！'; G.milestoneMsgT = 2;
+  }
+}
 else if(it.type==='speed'){G.dashSpeedT=3;G.milestoneMsg='⚡ 极速冲刺 3 秒！';G.milestoneMsgT=1.5;beep(1200,0.2,'sawtooth',0.06,1800);}
 else{G.doubleT=10;G.stats.doubleCount++;G.milestoneMsg='✨ 双倍金币 10 秒';G.milestoneMsgT=1.5;beep(980,0.14,'triangle',0.055,1480);}
       for(let k=0;k<16;k++)addParticle(it.x,it.y,rand(-220,220),rand(-260,80),rand(0.3,0.7),it.type==='shield'?'#7ee0ff':(it.type==='magnet'?'#ff5c7a':'#ffd93d'),rand(2,5),380);
@@ -2583,35 +2820,85 @@ function drawLowBar(o){
 }
 function drawSlideBar(o){
   ctx.save();
-  // 画顶部的发射器
-  ctx.fillStyle='#2a3040';
-  roundRect(o.x-4, o.y-10, o.w+8, 20, 6);ctx.fill();
   
-  // 画向下的红色激光光束
-  const laserGrad = ctx.createLinearGradient(0, o.y, 0, o.y+o.h);
-  laserGrad.addColorStop(0, 'rgba(255, 60, 60, 0.85)');
-  laserGrad.addColorStop(1, 'rgba(255, 100, 100, 0.2)');
+  // 1. 顶部发射器（故意画到屏幕外面去，看起来像是从宇宙打下来的）
+  ctx.fillStyle = '#2a3040';
+  ctx.fillRect(o.x - 6, -30, o.w + 12, 40); 
+  // 发射器下方的高亮金属边
+  ctx.fillStyle = '#4a5a7a';
+  ctx.fillRect(o.x - 4, 5, o.w + 8, 5); 
   
-  ctx.fillStyle = laserGrad;
-  ctx.shadowColor = '#ff2020';
-  ctx.shadowBlur = 15;
-  ctx.fillRect(o.x+4, o.y, o.w-8, o.h);
-  
-  // 画底部的警示横杆
+  // 2. 刺眼的红色警示灯
   ctx.fillStyle = '#ff2020';
-  ctx.shadowBlur = 25;
-  roundRect(o.x-2, o.y+o.h-10, o.w+4, 10, 5);ctx.fill();
-  
-  // 画一些流动的电流特效
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+  ctx.shadowColor = '#ff2020'; 
+  ctx.shadowBlur = 20;
+  ctx.fillRect(o.x, 10, o.w, 6);
+  ctx.shadowBlur = 0;
+
+  // 3. 主激光光束（从顶部直劈到接近地面）
+  const laserGrad = ctx.createLinearGradient(0, 10, 0, o.h);
+  laserGrad.addColorStop(0, 'rgba(255, 40, 40, 1)');     // 最顶端极亮
+  laserGrad.addColorStop(0.5, 'rgba(255, 60, 60, 0.8)'); // 中间微透明
+  laserGrad.addColorStop(1, 'rgba(255, 100, 100, 0.4)'); // 底部变淡
+
+  ctx.fillStyle = laserGrad;
+  ctx.fillRect(o.x + 4, 15, o.w - 8, o.h - 15);
+
+  // 4. 内部的高能电流（穿梭感）
+  ctx.strokeStyle = '#ffffff'; 
   ctx.lineWidth = 2;
-  ctx.setLineDash([8, 15]);
-  ctx.lineDashOffset = -G.time * 150;
+  ctx.setLineDash([15, 20]);
+  ctx.lineDashOffset = -G.time * 300; // 极速流动
   ctx.beginPath();
-  ctx.moveTo(o.x + o.w/2, o.y);
-  ctx.lineTo(o.x + o.w/2, o.y + o.h);
+  ctx.moveTo(o.x + o.w / 2, 15);
+  ctx.lineTo(o.x + o.w / 2, o.h);
   ctx.stroke();
+  ctx.setLineDash([]); // 恢复
+
+  // 5. 底部的致命能量阻隔杆（必须贴着滑铲极限高度）
+  ctx.fillStyle = '#ff2020';
+  ctx.shadowColor = '#ff2020'; 
+  ctx.shadowBlur = 25;
+  roundRect(o.x - 6, o.h - 10, o.w + 12, 12, 6); 
+  ctx.fill();
   
+  // 6. 地面被激光灼烧的发光点
+  ctx.fillStyle = 'rgba(255, 60, 60, 0.4)';
+  ctx.beginPath();
+  ctx.ellipse(o.x + o.w / 2, GROUND_Y, o.w * 0.8, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+function drawSkyMine(o){
+  const cx = o.x + o.w/2;
+  const cy = o.y + o.h/2 + Math.sin(G.time*3 + o.phase)*5; // 空中悬浮晃动
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(G.time * 2);
+  
+  // 红色光芒
+  ctx.shadowColor = '#ff2020'; ctx.shadowBlur = 20;
+  ctx.fillStyle = '#8a0000';
+  ctx.beginPath(); ctx.arc(0, 0, o.w/2, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#ff4040'; ctx.lineWidth = 2; ctx.stroke();
+  
+  // 尖刺
+  ctx.fillStyle = '#ff2020';
+  for(let i=0; i<8; i++){
+    ctx.rotate(Math.PI/4);
+    ctx.beginPath(); 
+    ctx.moveTo(o.w/2 - 4, -4); 
+    ctx.lineTo(o.w/2 + 6, 0); 
+    ctx.lineTo(o.w/2 - 4, 4); 
+    ctx.fill();
+  }
+  ctx.restore();
+  
+  // 地面上的危险预警投影
+  ctx.save();
+  ctx.fillStyle = 'rgba(255, 50, 50, 0.3)';
+  ctx.beginPath(); ctx.ellipse(cx, GROUND_Y, o.w/2, 4, 0, 0, Math.PI*2); ctx.fill();
   ctx.restore();
 }
 function drawDrone(o){
@@ -4431,6 +4718,23 @@ if(ch.skinId==='kcb_laoda'){
     ctx.beginPath();ctx.ellipse(5.4,-60,2,2.4*bl,0,0,Math.PI*2);ctx.fill();
     ctx.beginPath();ctx.ellipse(-2.2,-60,2,2.4*bl,0,0,Math.PI*2);ctx.fill();
   }
+  // 张雪峰专属：白衬衫与红领带
+if(ch.id === 'zxf'){
+  let cy = -35; // 躯干中心
+  if(sliding) cy = -15;
+  if(P.flying) cy = -45;
+  // 白衬衫领口
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.moveTo(0, cy - 10); ctx.lineTo(6, cy - 5); ctx.lineTo(-6, cy - 5); ctx.fill();
+  // 红领带
+  ctx.fillStyle = '#ff2020';
+  ctx.beginPath(); ctx.moveTo(0, cy - 5); ctx.lineTo(2, cy - 2); ctx.lineTo(0, cy + 12); ctx.lineTo(-2, cy - 2); ctx.fill();
+}
+if(ch.id === 'zxf' && G.zxfLipT > 0){
+  ctx.fillStyle = '#800080'; 
+  let mouthY = -54; if(sliding) mouthY = -20; if(P.flying) mouthY = -62;
+  ctx.beginPath(); ctx.ellipse(4, mouthY, 4, 2, 0, 0, Math.PI*2); ctx.fill();
+}
   ctx.restore();
 }
 function drawSpiritBody(){
@@ -4589,6 +4893,28 @@ function drawChatPanel(){
   ctx.fillText('关闭', W/2, H/2 + 195);
 }
 function drawHUD(){
+// 康神开播界面
+if(G.kangLiveT > 0){
+  ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+  
+  // 胖了
+  ctx.fillStyle = '#ff5c7a'; roundRect(W/2 - 180, H/2 - 50, 140, 100, 16); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 30px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('胖了', W/2 - 110, H/2);
+  
+  // 没胖
+  ctx.fillStyle = '#7ee0ff'; roundRect(W/2 + 40, H/2 - 50, 140, 100, 16); ctx.fill();
+  ctx.fillStyle = '#111'; ctx.fillText('没胖', W/2 + 110, H/2);
+  
+  ctx.fillStyle = '#ffd93d'; ctx.font = 'bold 24px '+FONT;
+  ctx.fillText('直播间：大家觉得康神胖了吗？', W/2, H/2 - 120);
+  
+  // 显示兰花草
+  if(G.kangFlower > 0) {
+    ctx.fillText('🌿 x ' + G.kangFlower, 50, 50);
+  }
+  return;
+}
 if (G.slowMoT > 0) {
   ctx.save();
   // 画面四周暗红色的滤镜
@@ -4702,7 +5028,7 @@ if (G.slowMoT > 0) {
     ctx.strokeStyle=color;ctx.globalAlpha=0.85;ctx.lineWidth=1.5;roundRect(sx,sy,tw,26,13);ctx.stroke();ctx.globalAlpha=1;
     if(!rd){
       ctx.save();ctx.beginPath();
-      roundRect(sx+2,sy+2,(tw-4)*(1-G.reviveCD/Math.max(10,20-(getPet().passive.reviveCDMinus||0))),22,11);ctx.clip();
+      roundRect(sx+2,sy+2,(tw-4)*(1-G.reviveCD/Math.max(10,25-(getPet().passive.reviveCDMinus||0))),22,11);ctx.clip();
       ctx.globalAlpha=0.22;ctx.fillStyle='#7ee0ff';ctx.fillRect(sx,sy,tw,26);ctx.restore();
     }
     ctx.fillStyle=color;ctx.textAlign='center';ctx.textBaseline='middle';
@@ -4744,6 +5070,72 @@ if (G.slowMoT > 0) {
     if(rd){ctx.shadowColor=color;ctx.shadowBlur=10;}
     ctx.fillText(label,sx+tw/2,sy+14);ctx.restore();sx+=tw+8;
   }
+  const hasEquipSkill = (G.equips.boots>=5 || G.equips.armor>=8 || G.equips.ring>=10);
+if(hasEquipSkill && (G.mode==='playing'||G.mode==='endless'||G.mode==='boss')){
+  const rd=G.equipActiveCD<=0;
+  let icon = G.equips.ring>=10 ? '💍' : (G.equips.armor>=8 ? '🥋' : '👟');
+  const label=rd ? icon+' 就绪' : icon+' '+Math.ceil(G.equipActiveCD)+'s';
+  const color=rd?'#ffb84d':'rgba(180,215,255,0.55)';
+  ctx.save();ctx.font='bold 13px '+FONT;
+  const tw=ctx.measureText(label).width+26;
+  ctx.fillStyle='rgba(8,14,32,0.75)';roundRect(sx,sy,tw,26,13);ctx.fill();
+  ctx.strokeStyle=color;ctx.globalAlpha=0.85;ctx.lineWidth=1.5;roundRect(sx,sy,tw,26,13);ctx.stroke();ctx.globalAlpha=1;
+  if(!rd){
+    ctx.save();ctx.beginPath();
+    roundRect(sx+2,sy+2,(tw-4)*(1-G.equipActiveCD/15),22,11);ctx.clip();
+    ctx.globalAlpha=0.22;ctx.fillStyle='#ffb84d';ctx.fillRect(sx,sy,tw,26);ctx.restore();
+  }
+  ctx.fillStyle=color;ctx.textAlign='center';ctx.textBaseline='middle';
+  if(rd){ctx.shadowColor=color;ctx.shadowBlur=10;}
+  ctx.fillText(label,sx+tw/2,sy+14);ctx.restore();sx+=tw+8;
+}
+// 👇 张雪峰 HUD
+if(ch.id==='zxf'&&(G.mode==='playing'||G.mode==='endless'||G.mode==='zombie'||G.mode==='pvp')){
+  const rd=G.zxfCD<=0;
+  const label=rd?'🍦 巧乐滋就绪':'🍦 巧乐滋 '+Math.ceil(G.zxfCD)+'s';
+  const color=rd?'#ffb060':'rgba(180,215,255,0.55)';
+  ctx.save();ctx.font='bold 13px '+FONT;
+  const tw=ctx.measureText(label).width+26;
+  ctx.fillStyle='rgba(8,14,32,0.75)';roundRect(sx,sy,tw,26,13);ctx.fill();
+  ctx.strokeStyle=color;ctx.globalAlpha=0.85;ctx.lineWidth=1.5;roundRect(sx,sy,tw,26,13);ctx.stroke();ctx.globalAlpha=1;
+  if(!rd){
+    ctx.save();ctx.beginPath();
+    roundRect(sx+2,sy+2,(tw-4)*(1-G.zxfCD/15),22,11);ctx.clip();
+    ctx.globalAlpha=0.22;ctx.fillStyle='#ffb060';ctx.fillRect(sx,sy,tw,26);ctx.restore();
+  }
+  ctx.fillStyle=color;ctx.textAlign='center';ctx.textBaseline='middle';
+  if(rd){ctx.shadowColor=color;ctx.shadowBlur=10;}
+  ctx.fillText(label,sx+tw/2,sy+14);ctx.restore();sx+=tw+8;
+}
+
+// 👇 康神 HUD
+if(ch.id==='kang'&&(G.mode==='playing'||G.mode==='endless'||G.mode==='zombie'||G.mode==='pvp')){
+  const rd=G.kang1CD<=0;
+  const label=rd?'📺 开播就绪':'📺 开播 '+Math.ceil(G.kang1CD)+'s';
+  const color=rd?'#00d9ff':'rgba(180,215,255,0.55)';
+  ctx.save();ctx.font='bold 13px '+FONT;
+  const tw=ctx.measureText(label).width+26;
+  ctx.fillStyle='rgba(8,14,32,0.75)';roundRect(sx,sy,tw,26,13);ctx.fill();
+  ctx.strokeStyle=color;ctx.globalAlpha=0.85;ctx.lineWidth=1.5;roundRect(sx,sy,tw,26,13);ctx.stroke();ctx.globalAlpha=1;
+  if(!rd){
+    ctx.save();ctx.beginPath();
+    roundRect(sx+2,sy+2,(tw-4)*(1-G.kang1CD/20),22,11);ctx.clip();
+    ctx.globalAlpha=0.22;ctx.fillStyle='#00d9ff';ctx.fillRect(sx,sy,tw,26);ctx.restore();
+  }
+  ctx.fillStyle=color;ctx.textAlign='center';ctx.textBaseline='middle';
+  if(rd){ctx.shadowColor=color;ctx.shadowBlur=10;}
+  ctx.fillText(label,sx+tw/2,sy+14);ctx.restore();sx+=tw+8;
+  
+  // 兰花草数量
+  if(G.kangFlower > 0){
+    const flowerLabel = '🌿 x' + G.kangFlower;
+    ctx.save();ctx.font='bold 13px '+FONT;
+    const tw=ctx.measureText(flowerLabel).width+20;
+    ctx.fillStyle='rgba(8,14,32,0.75)';roundRect(sx,sy,tw,26,13);ctx.fill();
+    ctx.fillStyle='#55aa55';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(flowerLabel,sx+tw/2,sy+14);ctx.restore();sx+=tw+8;
+  }
+}
   if(ch.id==='zzy'&&(G.mode==='playing'||G.mode==='endless'||G.mode==='boss')){
   const rd=G.zzyFreezeCD<=0;
   const label=rd?'⚡ 凝滞就绪':'⚡ 凝滞 '+Math.ceil(G.zzyFreezeCD)+'s';
@@ -4858,77 +5250,110 @@ function drawDeadUI(){
 }
 
 function drawMpLobby(){
-  ctx.fillStyle='rgba(4,7,18,0.95)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = G.mpPvpMode ? 'rgba(30, 10, 10, 0.95)' : 'rgba(4,7,18,0.95)'; 
+  ctx.fillRect(0,0,W,H);
   ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
   
   // 标题
-  ctx.font='bold 28px '+FONT;ctx.fillStyle='#fff';
-  ctx.fillText('联机准备大厅', W/2, 80);
+  ctx.font='bold 24px '+FONT;ctx.fillStyle = G.mpPvpMode ? '#ff5c7a' : '#fff';
+  ctx.fillText(G.mpPvpMode ? '💣 互坑大乱斗准备室' : '联机准备大厅', W/2, 50);
   
-  // 房间号
-  ctx.font='bold 16px '+FONT;ctx.fillStyle='rgba(126,224,255,0.8)';
-  ctx.fillText('房间号：' + currentRoomId, W/2, 120);
-  
-  // 当前地图
-  ctx.font='13px '+FONT;ctx.fillStyle='rgba(180,215,255,0.6)';
-  const myIdSafe = mqttClient ? mqttClient._myId : '';
-ctx.fillText('地图：' + getMap().name + (myIdSafe && mpHostId === myIdSafe ? ' (你是房主)' : ' (跟随房主)'), W/2, 150);
+  // 房间号与人数
+  const playerCount = 1 + Object.keys(mpPeers).length;
+  ctx.font='bold 14px '+FONT;ctx.fillStyle='rgba(126,224,255,0.8)';
+  ctx.fillText('房间号：' + currentRoomId + '  (' + playerCount + '/10人)', W/2, 80);
 
-  // 玩家状态面板
-  const startY = 220;
-  const panelW = 200, panelH = 260;
-  
-  // 左边自己
-  ctx.fillStyle='rgba(22,34,70,0.9)';roundRect(40, startY, panelW, panelH, 16);ctx.fill();
-  ctx.strokeStyle=mpMyReady?'rgba(110,220,180,0.8)':'rgba(110,180,240,0.45)';ctx.lineWidth=2;
-  roundRect(40, startY, panelW, panelH, 16);ctx.stroke();
-  
-  ctx.font='bold 18px '+FONT;ctx.fillStyle='#fff';ctx.fillText(G.nickname||'跑者', 40+panelW/2, startY+40);
-  const myChar = getChar();
-  ctx.save();ctx.translate(40+panelW/2, startY+170);ctx.scale(1.6,1.6);
-  drawCharacterBody(myChar, G.time*5, false);ctx.restore();
-  ctx.font='bold 20px '+FONT;
-  ctx.fillStyle=mpMyReady?'#7ee0ff':'rgba(180,215,255,0.4)';
-  ctx.fillText(mpMyReady?'已准备':'未准备', 40+panelW/2, startY+panelH-30);
+  // === 收集所有玩家数据 ===
+  const allPlayers = [];
+  allPlayers.push({
+    name: G.nickname || '跑者',
+    charId: G.selected,
+    ready: mpMyReady,
+    isMe: true
+  });
+  for (let pid in mpPeers) {
+    allPlayers.push({
+      name: mpPeers[pid].name || '对手',
+      charId: mpPeers[pid].charId || 'mdf',
+      ready: mpPeers[pid].ready,
+      isMe: false
+    });
+  }
 
-  // 右边对手
-  ctx.fillStyle='rgba(22,34,70,0.9)';roundRect(W-40-panelW, startY, panelW, panelH, 16);ctx.fill();
-  const peerIds = Object.keys(mpPeers);
-  if (peerIds.length > 0) {
-    const peer = mpPeers[peerIds[0]];
-    ctx.strokeStyle=peer.ready?'rgba(110,220,180,0.8)':'rgba(255,140,190,0.45)';ctx.lineWidth=2;
-    roundRect(W-40-panelW, startY, panelW, panelH, 16);ctx.stroke();
+  // === 固定 10 个格子的网格布局 ===
+  const startY = 110;
+  const cardW = 210;
+  const cardH = 115;
+  const gapX = 20;
+  const gapY = 12;
+  
+  // 备份玩家的动态状态，防止大厅预览姿势奇怪
+  const oldPState = { sliding: P.sliding, flying: P.flying, onGround: P.onGround, dashing: P.dashing };
+
+  for (let i = 0; i < 10; i++) {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
     
-    ctx.font='bold 18px '+FONT;ctx.fillStyle='#fff';ctx.fillText(peer.name||'对手', W-40-panelW/2, startY+40);
-    const peerChar = getCharById(peer.charId||'mdf');
-    ctx.save();ctx.translate(W-40-panelW/2, startY+170);ctx.scale(1.6,1.6);
-    drawCharacterBody(peerChar, G.time*5+1, false);ctx.restore();
-    ctx.font='bold 20px '+FONT;
-    ctx.fillStyle=peer.ready?'#7ee0ff':'rgba(180,215,255,0.4)';
-    ctx.fillText(peer.ready?'已准备':'未准备', W-40-panelW/2, startY+panelH-30);
-  } else {
-    ctx.strokeStyle='rgba(120,150,200,0.28)';ctx.lineWidth=2;
-    roundRect(W-40-panelW, startY, panelW, panelH, 16);ctx.stroke();
-    ctx.font='bold 18px '+FONT;ctx.fillStyle='rgba(180,215,255,0.3)';ctx.fillText('等待加入…', W-40-panelW/2, startY+panelH/2);
+    // 左列和右列的 X 坐标
+    const x = col === 0 ? (W/2 - cardW - gapX/2) : (W/2 + gapX/2);
+    const y = startY + row * (cardH + gapY);
+
+    const p = allPlayers[i];
+
+    if (p) {
+      // 绘制玩家卡片
+      ctx.fillStyle='rgba(22,34,70,0.9)';
+      roundRect(x, y, cardW, cardH, 12);ctx.fill();
+      ctx.strokeStyle = p.ready ? 'rgba(110,220,180,0.8)' : (p.isMe ? 'rgba(79,209,255,0.8)' : 'rgba(255,140,190,0.5)');
+      ctx.lineWidth=2; roundRect(x, y, cardW, cardH, 12);ctx.stroke();
+
+      // 名字
+      ctx.font='bold 15px '+FONT; ctx.fillStyle= p.isMe ? '#7ee0ff' : '#fff';
+      ctx.fillText(p.name + (p.isMe ? ' (我)' : ''), x + cardW/2, y + 20);
+
+      // 角色模型（临时重置状态，让他只是站着或跑步）
+      P.sliding = false; P.flying = false; P.onGround = true; P.dashing = false;
+      const pChar = getCharById(p.charId);
+      ctx.save();
+      ctx.translate(x + 45, y + cardH - 10);
+      ctx.scale(0.9, 0.9);
+      drawCharacterBody(pChar, G.time*5, false); // 静止/微动
+      ctx.restore();
+
+      // 准备状态文字
+      ctx.font='bold 14px '+FONT;
+      ctx.fillStyle = p.ready ? '#7ee0ff' : 'rgba(180,215,255,0.4)';
+      ctx.fillText(p.ready ? '已准备' : '未准备', x + cardW - 60, y + cardH/2 + 10);
+
+    } else {
+      // 画空位框
+      ctx.fillStyle='rgba(22,34,70,0.3)';
+      roundRect(x, y, cardW, cardH, 12);ctx.fill();
+      ctx.strokeStyle='rgba(120,150,200,0.15)';ctx.lineWidth=2;
+      roundRect(x, y, cardW, cardH, 12);ctx.stroke();
+      ctx.font='14px '+FONT;ctx.fillStyle='rgba(180,215,255,0.15)';
+      ctx.fillText('等待加入…', x + cardW/2, y + cardH/2);
+    }
   }
 
-  // 准备按钮
-  if (peerIds.length > 0) {
-    const btnY = 560;
-    ctx.fillStyle = mpMyReady ? 'rgba(200,200,200,0.15)' : 'rgba(79,209,255,0.2)';
-    roundRect(140, btnY, 260, 60, 16); ctx.fill();
-    ctx.strokeStyle = mpMyReady ? 'rgba(200,200,200,0.4)' : 'rgba(79,209,255,0.8)';
-    ctx.lineWidth = 2; roundRect(140, btnY, 260, 60, 16); ctx.stroke();
-    ctx.font = 'bold 22px ' + FONT;
-    ctx.fillStyle = mpMyReady ? 'rgba(200,200,200,0.5)' : '#fff';
-    ctx.fillText(mpMyReady ? '等待对手…' : '点击准备', W / 2, btnY + 31);
-  }
+  // 恢复玩家状态
+  P.sliding = oldPState.sliding; P.flying = oldPState.flying; P.onGround = oldPState.onGround; P.dashing = oldPState.dashing;
+
+  // === 准备按钮 (位置向下移，避开卡片) ===
+  const btnY = 770;
+  ctx.fillStyle = mpMyReady ? 'rgba(200,200,200,0.15)' : (G.mpPvpMode ? 'rgba(255,90,90,0.3)' : 'rgba(79,209,255,0.3)');
+  roundRect(140, btnY, 260, 50, 16); ctx.fill();
+  ctx.strokeStyle = mpMyReady ? 'rgba(200,200,200,0.4)' : (G.mpPvpMode ? 'rgba(255,90,90,0.9)' : 'rgba(79,209,255,0.9)');
+  ctx.lineWidth = 2; roundRect(140, btnY, 260, 50, 16); ctx.stroke();
+  ctx.font = 'bold 20px ' + FONT; ctx.fillStyle = mpMyReady ? 'rgba(200,200,200,0.5)' : '#fff';
+  ctx.fillText(mpMyReady ? '等待其他玩家…' : '点击准备', W/2, btnY + 26);
 
   // 退出按钮
   ctx.font='14px '+FONT;ctx.fillStyle='rgba(255,90,120,0.7)';
-  ctx.fillText('退出房间', W/2, 680);
+  ctx.fillText('退出房间', W/2, 860);
   
   ctx.restore();
+
 
   // ===== 倒计时数字覆盖层 =====
   if (mpStartCountdown > 0) {
@@ -5073,9 +5498,35 @@ function drawMpResult(){
   
   ctx.restore();
 }
+function drawSideIcon(b, icon, label, rgb){
+  ctx.save();
+  const g = ctx.createRadialGradient(b.x+b.w/2, b.y+b.h/2, 5, b.x+b.w/2, b.y+b.h/2, b.w/2);
+  g.addColorStop(0, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.3)`);
+  g.addColorStop(1, 'rgba(10,16,38,0.8)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(b.x+b.w/2, b.y+b.h/2, b.w/2, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.8)`; ctx.lineWidth=2; ctx.stroke();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font = '24px ' + FONT; ctx.fillStyle = '#fff';
+  ctx.fillText(icon, b.x+b.w/2, b.y+b.h/2 - 6);
+  ctx.font = 'bold 11px ' + FONT; ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  ctx.fillText(label, b.x+b.w/2, b.y+b.h/2 + 18);
+  ctx.restore();
+}
+
+function drawTopBtn(x, y, label, bgColor){
+  ctx.save();
+  ctx.fillStyle = bgColor; roundRect(x, y, 90, 30, 10); ctx.fill();
+  ctx.strokeStyle = 'rgba(126,224,255,0.5)'; ctx.lineWidth=1.5; roundRect(x, y, 90, 30, 10); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font='bold 13px '+FONT;
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(label, x+45, y+15);
+  ctx.restore();
+}
 function drawLobby(){
   const ch=getChar(),map=getMap();
   ctx.fillStyle='rgba(4,7,18,0.35)';ctx.fillRect(0,0,W,H);
+  
+  // 标题
   ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
   ctx.save();ctx.shadowColor='rgba(255,90,140,0.8)';ctx.shadowBlur=32;ctx.font='bold 44px '+FONT;
   ctx.fillStyle='#fff';ctx.fillText('王金武快跑',270,72);ctx.restore();
@@ -5084,85 +5535,67 @@ function drawLobby(){
   ctx.font='bold 44px '+FONT;ctx.strokeStyle=tg;ctx.lineWidth=2;ctx.strokeText('王金武快跑',270,72);
   ctx.font='14px '+FONT;ctx.fillStyle='rgba(170,210,255,0.62)';
   ctx.fillText((G.nickname||'未命名')+' · '+map.name+' · '+map.tag,270,108);ctx.restore();
+  
+  // 角色展示
   ctx.save();
   const pulse=1+Math.sin(G.lobbyGlow*2.2)*0.04;
   ctx.globalAlpha=0.5;ctx.shadowColor='rgba(126,224,255,0.9)';ctx.shadowBlur=40;
-  ctx.beginPath();ctx.ellipse(270,440,110*pulse,19*pulse,0,0,Math.PI*2);
+  ctx.beginPath();ctx.ellipse(270,460,120*pulse,20*pulse,0,0,Math.PI*2);
   ctx.fillStyle='rgba(60,140,220,0.28)';ctx.fill();ctx.restore();
-  ctx.save();ctx.translate(270,434);ctx.scale(1.95,1.95);
+  
+  ctx.save();ctx.translate(270,450);ctx.scale(2.2,2.2);
   ctx.translate(0,-Math.abs(Math.sin(P.runPhase))*1.2);
   drawCharacterBody(ch,P.runPhase,false);ctx.restore();
-  const PX=30,PY=488,PW=480,PH=210;
+
+  // 属性面板
   ctx.save();
-  const pg=ctx.createLinearGradient(PX,PY,PX,PY+PH);
-  pg.addColorStop(0,'rgba(22,34,70,0.88)');pg.addColorStop(1,'rgba(10,16,38,0.88)');
-  ctx.fillStyle=pg;roundRect(PX,PY,PW,PH,18);ctx.fill();
-  ctx.strokeStyle='rgba(110,180,240,0.45)';ctx.lineWidth=2;roundRect(PX,PY,PW,PH,18);ctx.stroke();ctx.restore();
-  const cx=PX+24;
-  ctx.save();ctx.textAlign='left';ctx.textBaseline='middle';ctx.font='bold 26px '+FONT;
-  ctx.fillStyle='#fff';ctx.shadowColor='rgba(126,224,255,0.6)';ctx.shadowBlur=14;
-  ctx.fillText(ch.name,cx,PY+54);
-  ctx.restore();
-  ctx.save();ctx.textAlign='left';ctx.textBaseline='middle';ctx.font='13px '+FONT;
-  ctx.fillStyle='rgba(160,215,255,0.8)';
-  ctx.fillText(ch.tag,cx,PY+80);ctx.restore();
+  ctx.fillStyle='rgba(22,34,70,0.6)';
+  roundRect(80, 500, 380, 90, 16);ctx.fill();
+  ctx.strokeStyle='rgba(110,180,240,0.3)';ctx.lineWidth=1.5;roundRect(80, 500, 380, 90, 16);ctx.stroke();
+  
+  ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.font='bold 20px '+FONT;
+  ctx.fillStyle='#fff'; ctx.fillText(ch.name, 110, 525);
+  ctx.font='13px '+FONT; ctx.fillStyle='rgba(160,215,255,0.8)'; ctx.fillText(ch.tag, 110, 545);
+  
   const st=charStats(ch);
-  drawStatBar(cx,PY+116,PW-48,'跳跃力',st.jump,[79,209,255]);
-  drawStatBar(cx,PY+142,PW-48,'滑铲力',st.slide,[255,110,175]);
+  drawStatBar(220, 520, 200, '跳', st.jump, [79,209,255]);
+  drawStatBar(220, 545, 200, '滑', st.slide, [255,110,175]);
+  
   const pet=getPet();
-  ctx.save();ctx.textBaseline='middle';ctx.textAlign='left';ctx.font='bold 18px '+FONT;
-  const cs2=String(G.totalCoins);ctx.fillStyle='#ffd93d';ctx.fillText(cs2,cx+22,PY+186);
-  drawCoinIcon(cx+9,PY+186,9);
-  ctx.textAlign='right';ctx.font='bold 14px '+FONT;ctx.fillStyle='rgba(180,215,255,0.72)';
-  ctx.fillText('最高 '+G.best+' 米 · 宠物 '+(pet.emoji||'无'),PX+PW-24,PY+186);ctx.restore();
-  // 右上角好友按钮（账号按钮下方）
-ctx.save();
-ctx.fillStyle='rgba(126,224,255,0.14)';
-roundRect(W-110,164,90,30,10);ctx.fill();
-ctx.strokeStyle='rgba(126,224,255,0.55)';ctx.lineWidth=1.5;
-roundRect(W-110,164,90,30,10);ctx.stroke();
-ctx.fillStyle='rgba(180,230,255,0.9)';ctx.font='bold 13px '+FONT;
-ctx.textAlign='center';ctx.textBaseline='middle';
-ctx.fillText('👥 好友', W-65, 179);
-ctx.restore();
+  ctx.font='bold 14px '+FONT; ctx.fillStyle='#ffd93d';
+  ctx.fillText('💰 '+G.totalCoins, 110, 570);
+  ctx.textAlign='right'; ctx.fillStyle='rgba(180,215,255,0.7)';
+  ctx.fillText('最高 '+G.best+'米 · 宠:'+(pet.emoji||'无'), 440, 570);
+  ctx.restore();
 
-// 右上角账号按钮
-ctx.save();
-const loggedIn = !!currentUserId;
-ctx.fillStyle = loggedIn ? 'rgba(126,224,255,0.18)' : 'rgba(255,210,60,0.15)';
-roundRect(ACCOUNT_BTN.x,ACCOUNT_BTN.y,ACCOUNT_BTN.w,ACCOUNT_BTN.h,10);ctx.fill();
-ctx.strokeStyle = loggedIn ? 'rgba(126,224,255,0.65)' : 'rgba(255,210,60,0.65)';
-ctx.lineWidth=1.5;
-roundRect(ACCOUNT_BTN.x,ACCOUNT_BTN.y,ACCOUNT_BTN.w,ACCOUNT_BTN.h,10);ctx.stroke();
-ctx.fillStyle = loggedIn ? 'rgba(180,230,255,0.95)' : 'rgba(255,230,150,0.95)';
-ctx.font='bold 13px '+FONT;
-ctx.textAlign='center';ctx.textBaseline='middle';
-ctx.fillText(loggedIn ? '👤 账号' : '👤 登录', ACCOUNT_BTN.x+ACCOUNT_BTN.w/2, ACCOUNT_BTN.y+ACCOUNT_BTN.h/2+1);
-ctx.restore();
+  // 侧边图标
+  drawSideIcon(B_SHOP, '🛒', '商店', [140,180,240]);
+  drawSideIcon({x: 20, y: 270, w: 70, h: 70}, '🕹️', '街机厅', [255,64,192]);
+  drawSideIcon(B_GROW, '🌱', '成长', [200,140,240]);
+  drawSideIcon(B_MAP,  '🗺️', '地图', [79,209,255]);
+  drawSideIcon(B_RANK, '🏆', '全服榜', [255,210,60]);
+  drawSideIcon(B_MP,   '👥', '联机', [126,224,255]);
+  drawSideIcon(B_EQUIP,'⚒️', '装备', [255,140,60]);
 
-drawUIButton(L_START,'经 典 跑 酷',[79,209,255],true);
-  drawUIButton(L_ENDLESS,'🔥 无尽火线',[255,90,90],true);
-  drawUIButton(L_DUEL,mpActive?'👥 联机中':'👥 联 机',mpActive?[255,210,60]:[126,224,255],true);
-ctx.save();ctx.fillStyle='rgba(255,210,60,0.15)';roundRect(L_DUEL.x, L_DUEL.y-62, L_DUEL.w, 52, 14);ctx.fill();
-ctx.strokeStyle='rgba(255,210,60,0.65)';ctx.lineWidth=2;roundRect(L_DUEL.x, L_DUEL.y-62, L_DUEL.w, 52, 14);ctx.stroke();
-ctx.fillStyle='#ffd93d';ctx.font='bold 20px '+FONT;ctx.textAlign='center';ctx.textBaseline='middle';
-ctx.fillText('🏆 全服榜', L_DUEL.x+L_DUEL.w/2, L_DUEL.y-62+26);ctx.restore();
-  drawUIButton(L_BOSS,'👹 BOSS 追击',[255,64,192],true);
-  const _canCR=G.coinRushDate!==todayStr();
-  drawUIButton(L_COIN,_canCR?'💰 金币风暴':'💰 今日已玩',_canCR?[255,210,60]:[120,120,140],_canCR);
-  drawUIButton(L_MAP,'地 图',[79,209,255],true);
-  drawUIButton(L_SD,'⚡ 极限时速',[255,64,64],true);
-  drawUIButton(L_SHOP,'商 店',[140,180,240],true);
-  drawUIButton(L_GROW,'成 长',[200,140,240],true);
-  // 聊天按钮
-ctx.fillStyle='rgba(255,255,255,0.1)';
-roundRect(W-80, H-120, 60, 60, 30);ctx.fill();
-ctx.strokeStyle='rgba(126,224,255,0.5)';ctx.lineWidth=2;
-roundRect(W-80, H-120, 60, 60, 30);ctx.stroke();
-ctx.fillStyle='#7ee0ff';ctx.font='28px '+FONT;
-ctx.textAlign='center';ctx.textBaseline='middle';
-ctx.fillText('💬', W-50, H-89);
-drawChatPanel();
+  // 右上角功能
+  const loggedIn = !!currentUserId;
+  drawTopBtn(W-110,128, '👤 '+(loggedIn?'账号':'登录'), loggedIn?'rgba(126,224,255,0.18)':'rgba(255,210,60,0.15)');
+  drawTopBtn(W-110,164, '👥 好友', 'rgba(126,224,255,0.14)');
+  drawTopBtn(W-110,200, '💬 聊天', 'rgba(255,255,255,0.1)');
+
+  // 底部按钮
+  drawUIButton(B_ENDLESS,'🔥 无尽火线',[255,90,90],true);
+  drawUIButton(B_BOSS,'👹 BOSS',[255,64,192],true);
+  drawUIButton(B_ZOMBIE,'🧟 丧尸',[110,200,120],true);
+  drawUIButton(B_COIN,'💰 金币风暴',[255,210,60],true);
+  drawUIButton(B_SPEED,'⚡ 极限时速',[255,64,64],true);
+  drawUIButton(B_PVP, G.mpPvpMode?'💣 互坑中':'💣 互坑', [255,90,90], true);
+
+  // 超大经典跑酷
+  drawUIButton(B_CLASSIC,'▶ 经 典 跑 酷',[79,209,255],true);
+
+  // 聊天面板
+  if(typeof drawChatPanel === 'function') drawChatPanel();
 }
 function charStats(c){
   return{
@@ -5419,29 +5852,158 @@ drawUIButton(FRIEND_REQ_BTN,'📨 申请',[255,140,200],true);
   drawUIButton(FRIEND_REFRESH_BTN,'🔄 刷新',[255,210,60],true);
   drawUIButton(FRIEND_BACK_BTN,'返 回',[79,209,255],true);
 }
+function drawMapThumbnail(m, x, y, w, h) {
+  ctx.save();
+  // 限制在一个圆角矩形内
+  ctx.beginPath();
+  roundRect(x, y, w, h, 10);
+  ctx.clip();
+
+  // 1. 画天空渐变
+  const skyGrad = ctx.createLinearGradient(x, y, x, y+h*0.7);
+  skyGrad.addColorStop(0, m.sky[0]); skyGrad.addColorStop(1, m.sky[3]);
+  ctx.fillStyle = skyGrad; ctx.fillRect(x, y, w, h);
+
+  // 2. 画月亮/太阳
+  if(m.hasMoon) {
+    ctx.fillStyle = m.moonColor;
+    ctx.beginPath(); ctx.arc(x + w*0.7, y + h*0.3, w*0.08, 0, Math.PI*2); ctx.fill();
+  }
+
+  // 3. 画地貌特征
+  const groundY = y + h*0.75;
+  ctx.fillStyle = m.hills;
+  
+  if (m.id === 'city') {
+    // 霓虹都市的高楼
+    ctx.fillStyle = m.backdrop;
+    ctx.fillRect(x + w*0.1, groundY - h*0.4, w*0.2, h*0.4);
+    ctx.fillRect(x + w*0.4, groundY - h*0.6, w*0.25, h*0.6);
+    ctx.fillRect(x + w*0.7, groundY - h*0.35, w*0.2, h*0.35);
+    // 窗户灯光
+    ctx.fillStyle = m.win1;
+    ctx.fillRect(x + w*0.15, groundY - h*0.3, 4, 4);
+    ctx.fillRect(x + w*0.45, groundY - h*0.5, 4, 4);
+  } else if (m.id === 'desert') {
+    // 沙漠金字塔
+    ctx.beginPath();
+    ctx.moveTo(x + w*0.2, groundY); ctx.lineTo(x + w*0.4, groundY - h*0.5); ctx.lineTo(x + w*0.6, groundY); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + w*0.6, groundY); ctx.lineTo(x + w*0.75, groundY - h*0.3); ctx.lineTo(x + w*0.9, groundY); ctx.fill();
+  } else if (m.id === 'ice') {
+    // 雪山
+    ctx.beginPath();
+    ctx.moveTo(x + w*0.1, groundY); ctx.lineTo(x + w*0.3, groundY - h*0.6); ctx.lineTo(x + w*0.5, groundY); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.6)'; // 雪顶
+    ctx.beginPath();
+    ctx.moveTo(x + w*0.23, groundY - h*0.4); ctx.lineTo(x + w*0.3, groundY - h*0.6); ctx.lineTo(x + w*0.37, groundY - h*0.4); ctx.fill();
+  } else if (m.id === 'lava') {
+    // 火山
+    ctx.beginPath();
+    ctx.moveTo(x + w*0.2, groundY); ctx.lineTo(x + w*0.4, groundY - h*0.55); ctx.lineTo(x + w*0.6, groundY); ctx.fill();
+    ctx.fillStyle = '#ff5020'; // 岩浆
+    ctx.fillRect(x + w*0.35, groundY - h*0.55, w*0.1, h*0.1);
+    ctx.beginPath(); ctx.moveTo(x + w*0.35, groundY - h*0.55); ctx.lineTo(x + w*0.3, groundY); ctx.lineTo(x + w*0.4, groundY); ctx.fill();
+  } else if (m.id === 'sakura') {
+    // 樱花树
+    ctx.fillStyle = '#7a4a70';
+    ctx.fillRect(x + w*0.2, groundY - h*0.3, 4, h*0.3);
+    ctx.fillRect(x + w*0.7, groundY - h*0.35, 4, h*0.35);
+    ctx.fillStyle = '#ffb0d0';
+    ctx.beginPath(); ctx.arc(x + w*0.21, groundY - h*0.35, w*0.1, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x + w*0.71, groundY - h*0.4, w*0.12, 0, Math.PI*2); ctx.fill();
+  }
+
+  // 4. 画地面
+  const groundGrad = ctx.createLinearGradient(x, groundY, x, y+h);
+  groundGrad.addColorStop(0, m.ground[0]); groundGrad.addColorStop(1, m.ground[1]);
+  ctx.fillStyle = groundGrad; ctx.fillRect(x, groundY, w, h - (groundY - y));
+  
+  // 地面高光线
+  ctx.fillStyle = m.groundLine; ctx.fillRect(x, groundY, w, 2);
+
+  // 5. 小角色预览（增加生动感）
+  ctx.save();
+  ctx.translate(x + w*0.2, groundY + 10);
+  ctx.scale(0.35, 0.35); // 缩小
+  drawCharacterBody(getChar(), 0, false);
+  ctx.restore();
+
+  ctx.restore();
+}
 function drawMapSelect(){
-  ctx.fillStyle='rgba(4,7,18,0.9)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(4,7,18,0.95)';ctx.fillRect(0,0,W,H);
   ctx.save();ctx.textBaseline='middle';ctx.textAlign='left';ctx.font='bold 28px '+FONT;
   ctx.shadowColor='rgba(255,210,60,0.7)';ctx.shadowBlur=22;ctx.fillStyle='#fff';
-  ctx.fillText('选择地图',30,44);ctx.restore();
+  ctx.fillText('🗺️ 选择地图',30,44);ctx.restore();
+  
+  // 给地图分配专属图标
+  const mapIcons = {
+    'city': '🌃', 'desert': '🏜️', 'ice': '❄️', 'lava': '🌋', 'sakura': '🌸'
+  };
+  
   for(let i=0;i<MAPS.length;i++){
-    const m=MAPS[i],r=mapCardRect(i),ac=(G.mapId===m.id);
+    const m = MAPS[i];
+    const r = mapCardRect(i);
+    const ac = (G.mapId === m.id);
+    
     ctx.save();
-    const cg=ctx.createLinearGradient(r.x,r.y,r.x,r.y+r.h);
-    if(ac){cg.addColorStop(0,'rgba(30,90,130,0.9)');cg.addColorStop(1,'rgba(12,36,66,0.9)');}
-    else{cg.addColorStop(0,'rgba(20,28,58,0.88)');cg.addColorStop(1,'rgba(10,15,34,0.88)');}
-    ctx.fillStyle=cg;roundRect(r.x,r.y,r.w,r.h,16);ctx.fill();
-    ctx.strokeStyle=ac?'rgba(126,224,255,0.95)':'rgba(120,160,220,0.4)';ctx.lineWidth=ac?2.6:2;
-    roundRect(r.x,r.y,r.w,r.h,16);ctx.stroke();ctx.restore();
-    ctx.save();ctx.textAlign='left';ctx.textBaseline='middle';
-    ctx.font='bold 20px '+FONT;ctx.fillStyle=ac?'#fff':'rgba(220,232,255,0.85)';
-    ctx.fillText(m.name,r.x+108,r.y+26);
-    ctx.font='bold 12px '+FONT;ctx.fillStyle=ac?'#7ee0ff':'rgba(150,195,255,0.7)';
-    ctx.fillText(m.tag,r.x+108,r.y+48);
-    ctx.font='11px '+FONT;ctx.fillStyle=ac?'rgba(255,210,60,0.9)':'rgba(200,180,120,0.6)';
-    ctx.fillText(m.feature,r.x+108,r.y+70);
+    // 1. 背景：使用地图原本的天空渐变色
+    const bgGrad = ctx.createLinearGradient(r.x, r.y, r.x, r.y+r.h);
+    bgGrad.addColorStop(0, m.sky[0] || '#0a0f1e'); 
+    bgGrad.addColorStop(0.7, m.sky[2] || '#1a2440');
+    bgGrad.addColorStop(1, m.ground[0] || '#141a3a');
+    ctx.fillStyle = bgGrad; 
+    roundRect(r.x, r.y, r.w, r.h, 16); ctx.fill();
+    
+    // 2. 边框：当前选中的高亮发光
+    if(ac) {
+      ctx.strokeStyle = '#7ee0ff'; ctx.lineWidth = 3;
+      ctx.shadowColor = 'rgba(126,224,255,0.8)'; ctx.shadowBlur = 15;
+    } else {
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1.5;
+    }
+    roundRect(r.x, r.y, r.w, r.h, 16); ctx.stroke();
+    ctx.restore();
+
+    // 3. 专属大图标 (带发光)
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '54px system-ui,"Apple Color Emoji","Segoe UI Emoji"';
+    ctx.shadowColor = ac ? m.groundLine : 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = 20;
+    ctx.fillText(mapIcons[m.id] || '🗺️', r.x + 75, r.y + r.h/2);
+    ctx.restore();
+
+    // 4. 文字信息排版
+    ctx.save();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    
+    // 标题
+    ctx.font = 'bold 22px ' + FONT;
+    ctx.fillStyle = ac ? '#fff' : 'rgba(255,255,255,0.7)';
+    ctx.fillText(m.name, r.x + 140, r.y + 35);
+    
+    // 标签
+    ctx.font = 'bold 12px ' + FONT;
+    ctx.fillStyle = ac ? m.groundLine : 'rgba(255,255,255,0.4)';
+    ctx.fillText('[' + m.tag + ']', r.x + 140, r.y + 62);
+    
+    // 特性说明
+    ctx.font = '12px ' + FONT;
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillText('✨ ' + m.feature, r.x + 140, r.y + 88);
+
+    // 选中状态提示
+    if(ac) {
+      ctx.font = 'bold 13px ' + FONT;
+      ctx.fillStyle = '#7ee0ff';
+      ctx.textAlign = 'right';
+      ctx.fillText('使用中 ✓', r.x + r.w - 25, r.y + r.h/2);
+    }
     ctx.restore();
   }
+  
   drawUIButton(MAP_BACK,'返 回',[79,209,255],true);
 }
 function drawShop(){
@@ -5533,6 +6095,47 @@ function drawSkinPanel(){
     ctx.restore();
   }
   drawUIButton(SKIN_CLOSE,'关 闭',[140,180,240],true);
+}
+function drawForge(){
+  ctx.fillStyle='rgba(4,7,18,0.92)';ctx.fillRect(0,0,W,H);
+  ctx.save();ctx.textBaseline='middle';ctx.textAlign='left';ctx.font='bold 28px '+FONT;
+  ctx.fillStyle='#fff';ctx.fillText('⚒️ 局外铁匠铺',30,44);ctx.restore();
+  
+  const ts=String(G.totalCoins);
+  ctx.save();ctx.font='bold 22px '+FONT;ctx.textAlign='right';ctx.textBaseline='middle';
+  ctx.fillStyle='#ffd93d';ctx.fillText(ts,W-30,52);ctx.restore();
+
+  for(let i=0; i<EQUIPS.length; i++){
+    const eq = EQUIPS[i];
+    const lv = G.equips[eq.id] || 0;
+    const isMax = lv >= eq.maxLv;
+    const price = isMax ? 0 : Math.floor(eq.basePrice * Math.pow(eq.priceMul, lv));
+    
+    const r = { x:30, y:130 + i*160, w:480, h:140 };
+    ctx.fillStyle='rgba(22,34,70,0.9)';
+    roundRect(r.x, r.y, r.w, r.h, 16); ctx.fill();
+    ctx.strokeStyle=isMax?'rgba(255,210,60,0.7)':'rgba(110,180,240,0.45)'; ctx.lineWidth=2;
+    roundRect(r.x, r.y, r.w, r.h, 16); ctx.stroke();
+
+    ctx.save();ctx.font='bold 46px '+FONT;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillStyle='#fff';ctx.fillText(eq.icon, r.x+55, r.y+70); ctx.restore();
+
+    ctx.save();ctx.textAlign='left';ctx.textBaseline='middle';ctx.font='bold 20px '+FONT;
+    ctx.fillStyle='#fff';ctx.fillText(eq.name, r.x+100, r.y+35);
+    ctx.font='13px '+FONT;ctx.fillStyle='rgba(160,215,255,0.75)';ctx.fillText(eq.desc, r.x+100, r.y+65);
+    ctx.font='bold 16px '+FONT;ctx.fillStyle=isMax?'#ffd93d':'#7ee0ff';
+    ctx.fillText('Lv.' + lv + ' / ' + eq.maxLv, r.x+100, r.y+100); ctx.restore();
+
+    const btn = {x:330, y:r.y+85, w:150, h:40};
+    if(isMax){
+      ctx.fillStyle='rgba(255,210,60,0.15)'; roundRect(btn.x, btn.y, btn.w, btn.h, 10); ctx.fill();
+      ctx.fillStyle='#ffd93d'; ctx.font='bold 16px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('已满级', btn.x+btn.w/2, btn.y+btn.h/2); ctx.restore();
+    } else {
+      drawUIButton(btn, '升级 ' + price, G.totalCoins>=price?[255,140,60]:[140,150,170], G.totalCoins>=price);
+    }
+  }
+  drawUIButton({x:150, y:780, w:240, h:60}, '返 回', [79,209,255], true);
 }
 function drawGrow(){
   ctx.fillStyle='rgba(4,7,18,0.92)';ctx.fillRect(0,0,W,H);
@@ -5641,39 +6244,82 @@ function drawGrow(){
       ctx.restore();
     }
     }else if(G.growthTab==='season'){
-  ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
-  ctx.font='bold 20px '+FONT;ctx.fillStyle='#fff';
-  ctx.fillText('赛季经验：' + G.seasonXP, W/2, 170);
+  ctx.save();
   
-  for(let i=0;i<SEASON_REWARDS.length;i++){
+  // 1. 顶部总览面板
+  ctx.fillStyle = 'rgba(22,34,70,0.9)';
+  roundRect(30, 145, W-60, 80, 16); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,210,60,0.6)'; ctx.lineWidth = 2;
+  roundRect(30, 145, W-60, 80, 16); ctx.stroke();
+
+  // 找出当前等级
+  let currentLv = 1;
+  let currentXpNeeded = 500;
+  let prevXp = 0;
+  for(let i=0; i<SEASON_REWARDS.length; i++){
+    if(G.seasonXP >= SEASON_REWARDS[i].xp) {
+      currentLv = SEASON_REWARDS[i].lv + 1;
+      prevXp = SEASON_REWARDS[i].xp;
+    } else {
+      currentXpNeeded = SEASON_REWARDS[i].xp;
+      break;
+    }
+  }
+  if(currentLv > 20) { currentLv = 20; currentXpNeeded = 350000; }
+
+  ctx.font = 'bold 24px '+FONT; ctx.fillStyle = '#ffd93d'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('当前等级：Lv.' + currentLv, 50, 175);
+
+  // 进度条
+  const barW = W - 120;
+  const ratio = Math.min(1, (G.seasonXP - prevXp) / (currentXpNeeded - prevXp || 1));
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; roundRect(50, 195, barW, 10, 5); ctx.fill();
+  ctx.fillStyle = '#ff40c0'; roundRect(50, 195, barW * ratio, 10, 5); ctx.fill();
+  
+  ctx.font = '12px '+FONT; ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.textAlign='right';
+  ctx.fillText(G.seasonXP + ' / ' + currentXpNeeded, 50 + barW, 175);
+
+  // 2. 奖励列表（支持上下滑动）
+  ctx.beginPath(); ctx.rect(0, 240, W, 500); ctx.clip(); // 限制绘制区域
+  const startY = 250 - G.growScroll;
+
+  for(let i=0; i<SEASON_REWARDS.length; i++){
     const r = SEASON_REWARDS[i];
-    const y = 210 + i*100;
+    const y = startY + i * 90;
+    if(y < 200 || y > 750) continue; // 屏幕外的不绘制
+
     const claimed = G.seasonClaimed.includes(i.toString());
     const canClaim = G.seasonXP >= r.xp && !claimed;
 
-    ctx.fillStyle = canClaim ? 'rgba(255,210,60,0.15)' : 'rgba(22,30,58,0.88)';
-    roundRect(30,y,480,80,14); ctx.fill();
-    ctx.strokeStyle = canClaim ? '#ffd93d' : (claimed ? 'rgba(110,220,180,0.3)' : 'rgba(120,150,200,0.25)');
-    ctx.lineWidth = canClaim ? 2.5 : 1.5; roundRect(30,y,480,80,14); ctx.stroke();
+    // 卡片背景
+    ctx.fillStyle = canClaim ? 'rgba(255,210,60,0.15)' : (claimed ? 'rgba(20,40,30,0.8)' : 'rgba(22,30,58,0.8)');
+    roundRect(30, y, W-60, 75, 14); ctx.fill();
+    ctx.strokeStyle = canClaim ? '#ffd93d' : (claimed ? 'rgba(110,220,180,0.3)' : 'rgba(120,150,200,0.2)');
+    ctx.lineWidth = canClaim ? 2 : 1; roundRect(30, y, W-60, 75, 14); ctx.stroke();
 
-    ctx.textAlign='left';ctx.font='bold 18px '+FONT;
-    ctx.fillStyle = claimed ? 'rgba(255,255,255,0.4)' : '#fff';
-    ctx.fillText('Lv.'+r.lv + '  需要经验: ' + r.xp, 50, y+30);
-    
-    ctx.font='14px '+FONT;ctx.fillStyle='#ffd93d';
-    ctx.fillText('奖励：' + r.name, 50, y+55);
+    // 等级标志
+    ctx.font = 'bold 20px '+FONT; ctx.textAlign='left';
+    ctx.fillStyle = claimed ? 'rgba(255,255,255,0.3)' : '#fff';
+    ctx.fillText('Lv.' + r.lv, 50, y + 38);
 
+    // 奖励说明
+    ctx.font = '14px '+FONT; ctx.fillStyle = claimed ? 'rgba(255,255,255,0.3)' : '#ffd93d';
+    ctx.fillText(r.name, 120, y + 30);
+    ctx.font = '12px '+FONT; ctx.fillStyle = 'rgba(150,180,220,0.6)';
+    ctx.fillText('需经验: ' + r.xp, 120, y + 52);
+
+    // 领取状态
     if(claimed){
-      ctx.textAlign='right';ctx.fillStyle='rgba(110,220,180,0.85)';
-      ctx.fillText('✓ 已领取', 480, y+40);
-    }else if(canClaim){
-      ctx.fillStyle='rgba(255,210,60,0.2)';roundRect(360,y+20,120,40,10);ctx.fill();
-      ctx.strokeStyle='#ffd93d';ctx.lineWidth=2;roundRect(360,y+20,120,40,10);ctx.stroke();
-      ctx.fillStyle='#ffd93d';ctx.textAlign='center';ctx.font='bold 16px '+FONT;
-      ctx.fillText('领 取', 420, y+40);
-    }else{
-      ctx.textAlign='right';ctx.fillStyle='rgba(255,255,255,0.2)';
-      ctx.fillText('未解锁', 480, y+40);
+      ctx.textAlign='right'; ctx.fillStyle='rgba(110,220,180,0.6)';
+      ctx.font='bold 14px '+FONT; ctx.fillText('✓ 已领取', W-50, y+38);
+    } else if(canClaim){
+      ctx.fillStyle='rgba(255,210,60,0.2)'; roundRect(W-140, y+18, 100, 38, 8); ctx.fill();
+      ctx.strokeStyle='#ffd93d'; ctx.lineWidth=1.5; roundRect(W-140, y+18, 100, 38, 8); ctx.stroke();
+      ctx.fillStyle='#ffd93d'; ctx.textAlign='center'; ctx.font='bold 14px '+FONT;
+      ctx.fillText('领 取', W-90, y+38);
+    } else {
+      ctx.textAlign='right'; ctx.fillStyle='rgba(255,255,255,0.2)';
+      ctx.font='14px '+FONT; ctx.fillText('未解锁', W-50, y+38);
     }
   }
   ctx.restore();
@@ -5761,7 +6407,7 @@ function endBoss(){
   if(G.mode!=='boss')return;
   const _rch=getChar();
   if(_rch.id==='zzy'&&G.reviveCD<=0){
-    G.reviveCD=Math.max(10,20-(getPet().passive.reviveCDMinus||0));
+    G.reviveCD=Math.max(10,25-(getPet().passive.reviveCDMinus||0));
     G.stats.usedRevive++;
     BOSS.gap=Math.min(BOSS.gapMax,BOSS.gap+260);
     G.shield=0;G.invulnT=2.5;G.shake=22;
@@ -5777,19 +6423,22 @@ function endBoss(){
   beep(280,0.6,'sawtooth',0.1,40);
   for(let i=0;i<40;i++)addParticle(P.x+rand(-40,40),P.y-34+rand(-40,40),rand(-380,380),rand(-480,80),rand(0.4,1.1),Math.random()<0.5?'#ff40c0':'#c060ff',rand(3,7),950);
   const score=displayMeters();
-  G.seasonXP += Math.floor(score * 0.8) + 50;
+  G.seasonXP += Math.floor(score * 2.5) + 150;
   if(score>G.best){G.best=score;G.newRecord=true;}else G.newRecord=false;
   G.stats.runs++;
   if(score>G.stats.maxDist)G.stats.maxDist=score;
   if(G.coins>G.stats.maxSessionCoins)G.stats.maxSessionCoins=G.coins;
   if(score>G.stats.bossBest)G.stats.bossBest=score;
   G.stats.totalDist+=score;
-  let best=null,next=null;
-  for(let i=0;i+SS_REWARDS.length;i++){if(score>=BOSS_REWARDS[i].dist)best=BOSS_REWARDS[i];else{next=BOSS_REWARDS[i];break;}}
-  let rc=0,rs=0,rw=0;
-  if(best){rc=best.coins;rs=best.shard;rw=best.wish;}
-  G.totalCoins+=rc;G.mythShard+=rs;G.wishCoins+=rw;G.stats.totalEarned+=rc;
-  G.bossReward={best,next,coins:rc,shard:rs,wish:rw,score,time:BOSS.surviveTime};
+  let best=null, next=null;
+for(let i=0;i<BOSS_REWARDS.length;i++){
+  if(score>=BOSS_REWARDS[i].dist) best=BOSS_REWARDS[i];
+  else { next=BOSS_REWARDS[i]; break; }
+}
+let rc=0, rs=0, rw=0;
+if(best){ rc=best.coins; rs=best.shard; rw=best.wish; }
+G.totalCoins+=rc; G.mythShard+=rs; G.wishCoins+=rw; G.stats.totalEarned+=rc;
+G.bossReward={best,next,coins:rc,shard:rs,wish:rw,score,time:BOSS.surviveTime};
 G.newAch=checkAchievements();markDirty();
 broadcastGlobalScore(); // 广播排行榜
 }
@@ -5828,6 +6477,9 @@ if(BOSS.gap>BOSS.gapMax)BOSS.gap=BOSS.gapMax;
   }
   if(G.flightCD>0)G.flightCD-=dt;if(G.flightCD<0)G.flightCD=0;
   if(G.reviveCD>0)G.reviveCD-=dt;if(G.reviveCD<0)G.reviveCD=0;
+  if(G.zxfCD>0) G.zxfCD -= dt;
+if(G.kang1CD>0) G.kang1CD -= dt;
+if(G.zxfLipT>0) G.zxfLipT -= dt;
   if(G.jufeiCD>0)G.jufeiCD-=dt;if(G.jufeiCD<0)G.jufeiCD=0;
   if(G.zycCD>0)G.zycCD-=dt;if(G.zycCD<0)G.zycCD=0;
   if(G.dashSpeedT>0)G.dashSpeedT-=dt;if(G.dashSpeedT<0)G.dashSpeedT=0;
@@ -5835,6 +6487,9 @@ if(BOSS.gap>BOSS.gapMax)BOSS.gap=BOSS.gapMax;
   if(P.slideCD>0)P.slideCD-=dt;
   if(G.invulnT>0)G.invulnT-=dt;
   if(G.soulCD>0)G.soulCD-=dt;if(G.soulCD<0)G.soulCD=0;
+  if(G.zxfCD>0) G.zxfCD -= dt;
+if(G.kang1CD>0) G.kang1CD -= dt;
+if(G.zxfLipT>0) G.zxfLipT -= dt;
   if(G.soulActive){
     G.soulT-=dt;
     if(G.soulT<=0){G.soulActive=false;G.shield=1;G.rushT=5;G.invulnT=Math.max(G.invulnT,2);
@@ -5918,6 +6573,11 @@ if (o.x < pbox.x + pbox.w && o.x + o.w > pbox.x && !o.dodged) {
 
   if (perfect) {
     G.slowMoT = 1.2; 
+    // 👟 战靴专属技能
+if (G.equips.boots >= 3) {
+  G.dashSpeedT = Math.max(G.dashSpeedT, 2); 
+  G.milestoneMsg = '👟 战靴发威！极速冲刺！';
+}
     G.slowMoBonus = 1; 
     G.milestoneMsg = '⚡ PERFECT 完美闪避！';
     G.milestoneMsgT = 1.5;
@@ -6059,15 +6719,44 @@ function drawBossHUD(){
 }
 function drawBossDeadUI(){
   const a=clamp(G.deadT/0.4,0,1);
-  ctx.save();ctx.globalAlpha=a;ctx.fillStyle='rgba(20,0,20,0.78)';ctx.fillRect(0,0,W,H);
+  ctx.save();ctx.globalAlpha=a;ctx.fillStyle='rgba(20,0,20,0.85)';ctx.fillRect(0,0,W,H);
   ctx.textAlign='center';ctx.textBaseline='middle';
+  
+  // 标题
   ctx.save();ctx.shadowColor='rgba(255,40,120,0.95)';ctx.shadowBlur=34;ctx.font='bold 44px '+FONT;
-  ctx.fillStyle='#ff40c0';ctx.fillText('👹 BOSS 追上你了！',W/2,130);ctx.restore();
-  ctx.font='bold 76px '+FONT;ctx.fillStyle='#fff';ctx.fillText(displayMeters()+'',W/2,240);
-  ctx.font='bold 20px '+FONT;ctx.fillStyle='rgba(255,180,220,0.8)';ctx.fillText('米',W/2,292);
-  ctx.font='bold 20px '+FONT;ctx.fillStyle='#ffd93d';
-  ctx.fillText('本局 ¥ '+G.coins+'    总计 ¥ '+G.totalCoins,W/2,340);
+  ctx.fillStyle='#ff40c0';ctx.fillText('👹 BOSS 追上你了！',W/2,90);ctx.restore();
+  
+  // 分数
+  ctx.font='bold 60px '+FONT;ctx.fillStyle='#fff';ctx.fillText(displayMeters()+'',W/2,180);
+  ctx.font='bold 20px '+FONT;ctx.fillStyle='rgba(255,180,220,0.8)';ctx.fillText('米',W/2,225);
+  
+  // 显示本局奖励
+  if(G.bossReward){
+    const r = G.bossReward;
+    ctx.font='bold 22px '+FONT;ctx.fillStyle='#ffd93d';
+    ctx.fillText('🎁 达成奖励：', W/2, 280);
+    
+    ctx.font='bold 18px '+FONT;
+    ctx.fillStyle='#fff';
+    // 展示具体的金币、碎片和心愿币
+    ctx.fillText(`🪙 ${r.coins} 金币    💠 ${r.shard} 碎片    🪙 ${r.wish} 心愿币`, W/2, 320);
+    
+    // 如果有下一档目标，提示还差多少
+    if(r.next) {
+      ctx.font='14px '+FONT; ctx.fillStyle='rgba(180,215,255,0.6)';
+      ctx.fillText(`距离下一档 (${r.next.dist}m) 还差 ${r.next.dist - r.score} 米`, W/2, 360);
+    } else {
+      ctx.font='14px '+FONT; ctx.fillStyle='#55aa55';
+      ctx.fillText('🏆 你已达成最高档位奖励！', W/2, 360);
+    }
+  }
+  
+  // 本局总金币
+  ctx.font='bold 16px '+FONT;ctx.fillStyle='rgba(180,215,255,0.7)';
+  ctx.fillText('本局共吃金币: '+G.coins+'   总计: '+G.totalCoins, W/2, 410);
+  
   ctx.restore();
+  
   if(G.deadT>0.7){
     ctx.save();ctx.globalAlpha=a;
     drawUIButton({x:90,y:640,w:360,h:56},'再 战 BOSS',[255,64,192],true);
@@ -6086,7 +6775,8 @@ function renderBoss(){
     if(o.type==='box')drawBox(o);else if(o.type==='doublebox')drawDoubleBox(o);
     else if(o.type==='spikes')drawSpikes(o);else if(o.type==='saw')drawSaw(o);
     else if(o.type==='lowbar')drawLowBar(o);
-else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='drone')drawDrone(o);
+else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='skymine')drawSkyMine(o);
+else if(o.type==='drone')drawDrone(o);
     else if(o.type==='hologram')drawHologram(o);else if(o.type==='cactus')drawCactus(o);
     else if(o.type==='icicle')drawIcicle(o);else if(o.type==='fireball')drawFireball(o);
     else if(o.type==='petalwind')drawPetalWind(o);
@@ -6114,6 +6804,7 @@ function startCoinRush(){
   G.coinRushDate=todayStr();G.stats.coinRushRuns++;
   obstacles.length=0;coins.length=0;items.length=0;particles.length=0;portals.length=0;
   resetPlayerState();pickWeather();
+initSeed(String(Date.now()) + Math.random()); // 强制初始化随机种子，打破固定循环！
   G.milestoneMsg='💰 60 秒金币风暴！';G.milestoneMsgT=2;
   beep(880,0.15,'triangle',0.06,1400);markDirty();
 }
@@ -6121,7 +6812,7 @@ function endCoinRush(){
   if(G.mode!=='coin')return;
   G.mode='coindone';G.deadT=0;CR.resultT=0;G.shake=14;
   const score=displayMeters();
-  G.seasonXP += Math.floor(score * 0.8) + 50;
+   Math.floor(score * 2.0) + 100
   G.stats.runs++;
   if(score>G.stats.maxDist)G.stats.maxDist=score;
   if(G.comboMax>G.stats.maxCombo)G.stats.maxCombo=G.comboMax;
@@ -6152,6 +6843,9 @@ if(G.dashT>0) { G.dashT -= dt; if(G.dashT<=0) { G.dashT=0; P.dashing=false; G.da
   G.speed=baseSpd;
   if(G.slideCD>0)P.slideCD-=dt;
   if(G.invulnT>0)G.invulnT-=dt;
+  if(G.zxfCD>0) G.zxfCD -= dt;
+if(G.kang1CD>0) G.kang1CD -= dt;
+if(G.zxfLipT>0) G.zxfLipT -= dt;
   if(G.magnetT>0)G.magnetT-=dt;
   if(G.doubleT>0)G.doubleT-=dt;
   const cw=(map.comboWindow||1.8)*(getWeather().comboMul||1);
@@ -6221,6 +6915,11 @@ if (o.x < pbox.x + pbox.w && o.x + o.w > pbox.x && !o.dodged) {
 
   if (perfect) {
     G.slowMoT = 1.2; 
+    // 👟 战靴专属技能
+if (G.equips.boots >= 3) {
+  G.dashSpeedT = Math.max(G.dashSpeedT, 2); 
+  G.milestoneMsg = '👟 战靴发威！极速冲刺！';
+}
     G.slowMoBonus = 1; 
     G.milestoneMsg = '⚡ PERFECT 完美闪避！';
     G.milestoneMsgT = 1.5;
@@ -6265,7 +6964,8 @@ function renderCoinRush(){
     if(o.type==='box')drawBox(o);else if(o.type==='doublebox')drawDoubleBox(o);
     else if(o.type==='spikes')drawSpikes(o);else if(o.type==='saw')drawSaw(o);
     else if(o.type==='lowbar')drawLowBar(o);
-else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='drone')drawDrone(o);
+else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='skymine')drawSkyMine(o);
+else if(o.type==='drone')drawDrone(o);
     else if(o.type==='hologram')drawHologram(o);else if(o.type==='cactus')drawCactus(o);
     else if(o.type==='icicle')drawIcicle(o);else if(o.type==='fireball')drawFireball(o);
     else if(o.type==='petalwind')drawPetalWind(o);
@@ -6314,6 +7014,7 @@ function startSpeedDemon(){
   SD.active=true;G.stats.sdRuns++;
   obstacles.length=0;coins.length=0;items.length=0;particles.length=0;portals.length=0;
   resetPlayerState();pickWeather();
+initSeed(String(Date.now()) + Math.random()); // 强制初始化随机种子，打破固定循环！
   G.milestoneMsg='⚡ 极限时速！撞即死';G.milestoneMsgT=2.2;
   beep(880,0.12,'triangle',0.06,1400);markDirty();
 }
@@ -6324,7 +7025,7 @@ function endSpeedDemon(){
   beep(280,0.5,'sawtooth',0.1,40);
   for(let i=0;i<44;i++)addParticle(P.x+rand(-40,40),P.y-34+rand(-40,40),rand(-400,400),rand(-500,80),rand(0.4,1.1),Math.random()<0.5?'#ff2020':'#ffd700',rand(3,7),950);
   const score=displayMeters();
-  G.seasonXP += Math.floor(score * 0.8) + 50;
+   Math.floor(score * 2.0) + 100
   if(score>G.best){G.best=score;G.newRecord=true;}else G.newRecord=false;
   G.stats.runs++;
   if(score>G.stats.maxDist)G.stats.maxDist=score;
@@ -6371,6 +7072,9 @@ if(G.dashT>0) { G.dashT -= dt; if(G.dashT<=0) { G.dashT=0; P.dashing=false; G.da
   const ch=getChar(),map=getMap();
   if(G.slideCD>0)P.slideCD-=dt;
   if(G.invulnT>0)G.invulnT-=dt;
+  if(G.zxfCD>0) G.zxfCD -= dt;
+if(G.kang1CD>0) G.kang1CD -= dt;
+if(G.zxfLipT>0) G.zxfLipT -= dt;
   if(P.sliding){P.slideT-=dt;if(P.slideT<=0)P.sliding=false;}
   P.vy+=GRAVITY*dt;
   if(keys.down&&!P.onGround)P.vy+=GRAVITY*1.5*dt;
@@ -6430,6 +7134,11 @@ if (o.x < pbox.x + pbox.w && o.x + o.w > pbox.x && !o.dodged) {
 
   if (perfect) {
     G.slowMoT = 1.2; 
+    // 👟 战靴专属技能
+if (G.equips.boots >= 3) {
+  G.dashSpeedT = Math.max(G.dashSpeedT, 2); 
+  G.milestoneMsg = '👟 战靴发威！极速冲刺！';
+}
     G.slowMoBonus = 1; 
     G.milestoneMsg = '⚡ PERFECT 完美闪避！';
     G.milestoneMsgT = 1.5;
@@ -6474,7 +7183,8 @@ function renderSpeedDemon(){
     if(o.type==='box')drawBox(o);else if(o.type==='doublebox')drawDoubleBox(o);
     else if(o.type==='spikes')drawSpikes(o);else if(o.type==='saw')drawSaw(o);
     else if(o.type==='lowbar')drawLowBar(o);
-else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='drone')drawDrone(o);
+else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='skymine')drawSkyMine(o);
+else if(o.type==='drone')drawDrone(o);
     else if(o.type==='hologram')drawHologram(o);else if(o.type==='cactus')drawCactus(o);
     else if(o.type==='icicle')drawIcicle(o);else if(o.type==='fireball')drawFireball(o);
     else if(o.type==='petalwind')drawPetalWind(o);
@@ -6563,7 +7273,8 @@ function renderEndless(){
     if(o.type==='box')drawBox(o);else if(o.type==='doublebox')drawDoubleBox(o);
     else if(o.type==='spikes')drawSpikes(o);else if(o.type==='saw')drawSaw(o);
     else if(o.type==='lowbar')drawLowBar(o);
-else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='drone')drawDrone(o);
+else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='skymine')drawSkyMine(o);
+else if(o.type==='drone')drawDrone(o);
     else if(o.type==='hologram')drawHologram(o);else if(o.type==='cactus')drawCactus(o);
     else if(o.type==='icicle')drawIcicle(o);else if(o.type==='fireball')drawFireball(o);
     else if(o.type==='petalwind')drawPetalWind(o);
@@ -6586,7 +7297,7 @@ function renderDuel(){
 }
 const keys={down:false};
 function jumpAction(){
-  if(G.mode==='playing'||G.mode==='endless'||G.mode==='boss'||G.mode==='coin'||G.mode==='sd'){
+  if(G.mode==='playing'||G.mode==='endless'||G.mode==='boss'||G.mode==='coin'||G.mode==='sd'||G.mode==='zombie'||G.mode==='pvp'){
     if(P.flying)return;
     const ch=getChar();
     if(P.sliding&&P.onGround){P.sliding=false;P.slideT=0;}
@@ -6631,22 +7342,40 @@ function jumpAction(){
     }else P.jumpBuffer=JUMP_BUFFER_TIME;
   }
 }
+if(G.mode==='zombie'){ jumpAction(); return; }
 function onJumpPress(){
   initAudio();
   if(G.mode==='lobby'){startGame();beep(660,0.14,'triangle',0.06,900);return;}
   if(G.mode==='dead'){if(G.deadT>0.7)startGame();return;}
   if(G.mode==='endlessdead'){if(G.deadT>0.7)startEndless();return;}
+  if(G.mode==='zombie'){jumpAction();return;}
+  if(G.mode==='pvp'){jumpAction();return;}
   if(G.mode==='boss'||G.mode==='coin'||G.mode==='endless'||G.mode==='playing'||G.mode==='sd'){jumpAction();return;}
 }
 window.addEventListener('keydown',function(e){
+if(e.code==='KeyQ'){
+  if(getChar().id === 'kang' && G.kangFlower > 0){
+  G.stats.kangFlowers++;
+    G.kangFlower--; G.totalCoins += 1000; G.coins += 1000;
+    G.milestoneMsg = '🌿 享用兰花草！+1000 金币！'; G.milestoneMsgT = 2;
+    beep(880, 0.2, 'triangle', 0.08, 1400);
+  }
+}
   if(e.code==='Escape'){
     if(G.skinPanel.open){G.skinPanel.open=false;return;}
     if(G.mode==='shop'||G.mode==='map'||G.mode==='grow')G.mode=G.returnMode||'lobby';
     return;
   }
+  if(e.code==='KeyE'){
+  e.preventDefault();
+  if(['playing','boss','endless','zombie','pvp'].includes(G.mode)&&!e.repeat){
+    tryActivateEquipSkill();
+  }
+  return;
+}
   if(e.code==='KeyF'){
     e.preventDefault();
-    const skillModes=['playing','boss','endless','coin','sd'].includes(G.mode);{
+    const skillModes=['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode);{
       const c=getChar();
       if(c.id==='kcb')tryActivateFlight();
       else if(c.id==='ylz')tryActivateJufei();
@@ -6795,6 +7524,87 @@ pool.push({type:'coin',    w:25}); // 金币 35% -> 降低到 25%
 }
 let pointerDrag={down:false,startX:0,startY:0,scrollStart:0,isDragging:false};
 function handlePointerSimple(x,y){
+if(G.mode === 'arcade_menu'){
+  if(inBtn(x,y,{x:150,y:800,w:240,h:56})){ G.mode='lobby'; return; }
+  if(inBtn(x,y,{x:90,y:200,w:360,h:150})){ startArcade(); return; }
+  if(inBtn(x,y,{x:90,y:400,w:360,h:150})){ startFlappy(); return; }
+  if(inBtn(x,y,{x:90,y:600,w:360,h:150})){ startSlot(); return; }
+  return;
+}
+
+if(G.mode === 'flappy'){
+  if(G.flappyDead){
+    if(G.flappyTimer > 1){
+      if(inBtn(x,y,{x:90,y:640,w:360,h:56})){ startFlappy(); return; }
+      if(inBtn(x,y,{x:90,y:708,w:360,h:56})){ G.mode='arcade_menu'; return; }
+    }
+  } else {
+    G.flappyVY = -500; // 点击向上飞
+    beep(600, 0.05, 'sine', 0.03, 900);
+  }
+  return;
+}
+
+if(G.mode === 'slot'){
+  if(inBtn(x,y,{x:150,y:750,w:240,h:56})){ G.mode='arcade_menu'; return; }
+  if(G.slotState==='idle' && inBtn(x,y,{x:140,y:600,w:260,h:60})){
+    if(G.totalCoins >= 100){
+      G.totalCoins -= 100; G.slotState='rolling'; G.slotMsg='🎰 摇奖中...'; markDirty();
+    } else {
+      alert('金币不足！'); return;
+    }
+  }
+  return;
+}
+
+if(G.mode === 'arcade'){
+  if(G.arcadeState !== 'playing'){
+    if(inBtn(x,y,{x:90,y:640,w:360,h:56})){startArcade();return;}
+    if(inBtn(x,y,{x:90,y:708,w:360,h:56})){G.mode='arcade_menu';return;}
+  }
+  return;
+}
+if(G.mode === 'grow' && G.growthTab === 'season'){
+  if(y > 240 && y < 740){
+    // 判断点击了领取按钮
+    for(let i=0; i<SEASON_REWARDS.length; i++){
+      const r = SEASON_REWARDS[i];
+      const cardY = 250 - G.growScroll + i * 90;
+      if(y >= cardY && y <= cardY + 75 && x >= W-140 && x <= W-40){
+        const claimed = G.seasonClaimed.includes(i.toString());
+        if(G.seasonXP >= r.xp && !claimed){
+          G.seasonClaimed.push(i.toString());
+          if(r.type==='coin') G.totalCoins += r.amount;
+          else if(r.type==='wish') G.wishCoins += r.amount;
+          else if(r.type==='shard') G.mythShard += r.amount;
+          else if(r.type==='crystal') G.mythCrystal += r.amount;
+          alert('🎁 领取成功：' + r.name);
+          beep(880,0.15,'triangle',0.06,1200);
+          markDirty();
+          return; // 只有成功领取才 return
+        }
+      }
+    }
+  }
+  // 👈 【关键修复】去掉了这里的 return; 让点击能继续传递给底部的返回按钮和顶部选项卡！
+}
+if(G.kangLiveT > 0){
+  if(y >= H/2 - 50 && y <= H/2 + 50){
+    if(x >= W/2 - 180 && x <= W/2 - 40){ // 胖了
+    G.stats.kangFat++;
+      G.milestoneMsg = '😡 康神生气了！速度暴涨！'; G.milestoneMsgT = 2;
+      G.dashSpeedT = Math.max(G.dashSpeedT, 6.0);
+      G.kangLiveT = 0; G.slowMoT = 0; G.shake = 20;
+    } else if(x >= W/2 + 40 && x <= W/2 + 180){ // 没胖
+    G.stats.kangNotFat++;
+      G.milestoneMsg = '🍗 酱味大鸡！护盾+磁铁+双倍！'; G.milestoneMsgT = 3;
+      G.shield = 1; G.magnetT = Math.max(G.magnetT, 10.0); G.doubleT = Math.max(G.doubleT, 10.0);
+      G.kangLiveT = 0; G.slowMoT = 0;
+      beep(1200, 0.3, 'sine', 0.1, 1800);
+    }
+  }
+  return;
+}
   initAudio();
   if(G.skinPanel.open){
     if(inBtn(x,y,SKIN_CLOSE)){G.skinPanel.open=false;return;}
@@ -6804,92 +7614,59 @@ function handlePointerSimple(x,y){
     return;
   }
   if(G.mode==='lobby'){
-  // 聊天面板交互
-if(G.chatOpen){
-  // 关闭
-  if(x>=W/2-40 && x<=W/2+40 && y>=H/2+180 && y<=H/2+210){
-    G.chatOpen = false;
-    document.getElementById('chatInputBox').blur();
-    return;
-  }
-  // 输入框
-  if(x>=40 && x<=W-110 && y>=H/2+130 && y<=H/2+170){
-    const inp = document.getElementById('chatInputBox');
-    inp.style.opacity = 1; inp.style.pointerEvents = 'auto'; // 唤起键盘
-    inp.focus();
-    return;
-  }
-  // 发送按钮
-  if(x>=W-100 && x<=W-40 && y>=H/2+130 && y<=H/2+170){
-    const inp = document.getElementById('chatInputBox');
-    const text = inp.value.trim();
-    if(text && friendMqtt && friendMqtt.connected){
-      friendMqtt.publish('wjw-global-chat-v1', JSON.stringify({
-        name: G.nickname || '玩家',
-        text: text
-      }));
-      inp.value = '';
-      inp.blur();
-      inp.style.opacity = 0; inp.style.pointerEvents = 'none'; // 隐藏键盘
-    }
-    return;
-  }
-  return; // 面板打开时，屏蔽大厅其他点击
-}
-
-// 点击聊天按钮展开
-if(x>=W-80 && x<=W-20 && y>=H-120 && y<=H-60){
-  G.chatOpen = true;
-  return;
-}
-  if(x>=W-110 && x<=W-20 && y>=164 && y<=194){G.mode='friends';return;}
-  if(inBtn(x,y,ACCOUNT_BTN)){
-    if(currentUserId){
-      // 已登录：询问登出还是关闭
-      if(confirm('当前账号：'+(localStorage.getItem('wjw_username')||'未知')+'\n\n点“确定”登出，点“取消”继续游戏')){
-        if(typeof logoutLocal==='function')logoutLocal();
-        else{
-          saveProgressOld();
-          currentUserId=null;
-          localStorage.removeItem('wjw_token');
-          localStorage.removeItem('wjw_uid');
-          localStorage.removeItem('wjw_username');
-          loadProgress();
-          enterGame();
-        }
+  // 聊天面板优先处理
+  if(G.chatOpen){
+    if(x>=W/2-40 && x<=W/2+40 && y>=H/2+180 && y<=H/2+210){ G.chatOpen = false; document.getElementById('chatInputBox').blur(); return; }
+    if(x>=40 && x<=W-110 && y>=H/2+130 && y<=H/2+170){ const inp=document.getElementById('chatInputBox'); inp.style.opacity=1; inp.style.pointerEvents='auto'; inp.focus(); return; }
+    if(x>=W-100 && x<=W-40 && y>=H/2+130 && y<=H/2+170){
+      const inp=document.getElementById('chatInputBox'); const text=inp.value.trim();
+      if(text && friendMqtt && friendMqtt.connected){
+        friendMqtt.publish('wjw-global-chat-v1', JSON.stringify({ name: G.nickname || '玩家', text: text }));
+        inp.value=''; inp.blur(); inp.style.opacity=0; inp.style.pointerEvents='none';
       }
-    }else{
-      // 未登录：打开登录层
-      const l=document.getElementById('loginLayer');
-      if(l)l.style.display='flex';
+      return;
     }
     return;
   }
-  if(inBtn(x,y,L_START)){startGame();return;}
-    if(inBtn(x,y,L_ENDLESS)){startEndless();return;}
-    if(x>=L_DUEL.x && x<=L_DUEL.x+L_DUEL.w && y>=L_DUEL.y-62 && y<=L_DUEL.y-10){
-  G.mode='global_rank';
-  broadcastGlobalScore(); // 进榜先喊一嗓子自己的分数
-  return;
-}
-    if(inBtn(x,y,L_DUEL)){
-  if(mpActive){
-    leaveMultiplayer();
-    G.milestoneMsg='已离开联机房间';G.milestoneMsgT=1.5;
-  }else{
-    const room=prompt('输入房间号（和好友约定同一个）','');
-    if(room&&room.trim())joinMultiplayer(room.trim());
-  }
-  return;
-}
-    if(inBtn(x,y,L_BOSS)){startBoss();return;}
-    if(inBtn(x,y,L_COIN)){if(G.coinRushDate===todayStr())return;startCoinRush();return;}
-    if(inBtn(x,y,L_MAP)){G.returnMode='lobby';G.mode='map';return;}
-    if(inBtn(x,y,L_SD)){startSpeedDemon();return;}
-    if(inBtn(x,y,L_SHOP)){G.returnMode='lobby';G.mode='shop';return;}
-    if(inBtn(x,y,L_GROW)){G.returnMode='lobby';G.mode='grow';G.growthTab='upgrade';G.growScroll=0;return;}
+
+  // 底部大按钮
+  if(inBtn(x,y,B_CLASSIC)){startGame();return;}
+  if(inBtn(x,y,B_ENDLESS)){startEndless();return;}
+  if(inBtn(x,y,B_BOSS)){startBoss();return;}
+  if(inBtn(x,y,B_ZOMBIE)){startZombie();return;}
+  if(inBtn(x,y,B_COIN)){if(G.coinRushDate===todayStr())return;startCoinRush();return;}
+  if(inBtn(x,y,B_SPEED)){startSpeedDemon();return;}
+  
+  if(inBtn(x,y,B_PVP)){
+    if(mpActive) leaveMultiplayer();
+    const room=prompt('输入互坑大乱斗房间号：','');
+    if(room&&room.trim()){ G.mpPvpMode = true; joinMultiplayer(room.trim()); }
     return;
   }
+
+  // 侧边圆图标
+  if(inBtn(x,y,B_SHOP)){G.returnMode='lobby';G.mode='shop';return;}
+  if(x>=20 && x<=90 && y>=270 && y<=340){ G.mode='arcade_menu'; return; }
+  if(inBtn(x,y,B_GROW)){G.returnMode='lobby';G.mode='grow';G.growthTab='upgrade';G.growScroll=0;return;}
+  if(inBtn(x,y,B_MAP)){G.returnMode='lobby';G.mode='map';return;}
+  if(inBtn(x,y,B_RANK)){ G.mode='global_rank'; if(typeof broadcastGlobalScore==='function') broadcastGlobalScore(); return;}
+  if(inBtn(x,y,B_EQUIP)){ G.returnMode='lobby'; G.mode='forge'; return; }
+  if(inBtn(x,y,B_MP)){
+    if(mpActive){ leaveMultiplayer(); }
+    else{ const room=prompt('输入房间号：',''); if(room&&room.trim()){ G.mpPvpMode = false; joinMultiplayer(room.trim()); } }
+    return;
+  }
+
+  // 右上角功能按钮
+  if(x>=W-110 && x<=W-20 && y>=128 && y<=158){ 
+    if(currentUserId) alert('已登录'); else document.getElementById('loginLayer').style.display='flex'; 
+    return; 
+  }
+  if(x>=W-110 && x<=W-20 && y>=164 && y<=194){ G.mode='friends'; return; }
+  if(x>=W-110 && x<=W-20 && y>=200 && y<=230){ G.chatOpen = !G.chatOpen; return; }
+
+  return;
+}
 if(G.mode==='mp_result'){
   if(x>=140 && x<=400 && y>=H/2+120 && y<=H/2+180){
     leaveMultiplayer();
@@ -6899,13 +7676,13 @@ if(G.mode==='mp_result'){
   return;
 }
 if(G.mode==='mp_lobby'){
-// 准备按钮
-  if(Object.keys(mpPeers).length > 0 && x>=140 && x<=400 && y>=560 && y<=620){
+  // 1. 准备按钮的点击范围 (对齐到 y=770 ~ y=820)
+  if(x >= 140 && x <= 400 && y >= 770 && y <= 820){
     if(!mpMyReady) mpToggleReady();
     return;
   }
-  // 退出按钮
-  if(y>=660 && y<=700 && x>=W/2-50 && x<=W/2+50){
+  // 2. 退出按钮的点击范围 (对齐到 y=850 ~ y=880)
+  if(x >= W/2 - 80 && x <= W/2 + 80 && y >= 840 && y <= 880){
     leaveMultiplayer();
     return;
   }
@@ -6966,6 +7743,26 @@ if(G.mode==='friends'){
     for(let i=0;i<CHARS.length;i++){const r=cardRect(i);if(x>=r.x&&x<=r.x+r.w&&y>=r.y&&y<=r.y+r.h){buyOrSelect(i);return;}}
     return;
   }
+  if(G.mode==='forge'){
+  if(x>=150 && x<=390 && y>=780 && y<=840){ G.mode=G.returnMode||'lobby'; return; }
+  
+  for(let i=0; i<EQUIPS.length; i++){
+    const eq = EQUIPS[i];
+    const lv = G.equips[eq.id] || 0;
+    if(lv >= eq.maxLv) continue;
+    const price = Math.floor(eq.basePrice * Math.pow(eq.priceMul, lv));
+    const btn = {x:330, y:130+i*160+85, w:150, h:40};
+    if(inBtn(x,y,btn) && G.totalCoins>=price){
+      G.totalCoins -= price;
+      G.equips[eq.id] = lv + 1;
+      beep(880,0.15,'triangle',0.06,1200);
+      setTimeout(()=>beep(1180,0.18,'triangle',0.06,1600),100);
+      markDirty();
+      return;
+    }
+  }
+  return;
+}
   if(G.mode==='grow'){
     if(inBtn(x,y,GROW_BACK)){G.mode=G.returnMode||'lobby';return;}
     if(inBtn(x,y,T_UPG)){G.growthTab='upgrade';return;}
@@ -6973,7 +7770,7 @@ if(G.mode==='friends'){
     if(inBtn(x,y,T_DLY)){G.growthTab='daily';return;}
     if(inBtn(x,y,T_WISH)){G.growthTab='wish';return;}
     if(inBtn(x,y,T_PET)){G.growthTab='pet';return;}
-    if(inBtn(x,y,T_SEASON)){G.growthTab='season';return;}
+    if(inBtn(x,y,T_SEASON)){G.growthTab='season';G.growScroll=0;return;}
     if(G.growthTab==='upgrade'){for(let i=0;i<UPGRADES.length;i++){const bb={x:330,y:160+i*142+80,w:160,h:42};if(inBtn(x,y,bb)){buyUpgrade(i);return;}}}
     else if(G.growthTab==='season'){
   for(let i=0;i<SEASON_REWARDS.length;i++){
@@ -7046,6 +7843,51 @@ if(G.mode==='friends'){
     return;
   }
   if(G.mode==='coin'){onJumpPress();return;}
+  if(G.mode==='zombie'){onJumpPress();return;}
+if(G.mode==='zombiewin'){
+  if(inBtn(x,y,{x:90,y:640,w:360,h:56})){startZombie();return;}
+  if(inBtn(x,y,{x:90,y:708,w:360,h:56})){G.mode='lobby';return;}
+  return;
+}{if(G.deadT>0.7){if(inBtn(x,y,{x:90,y:640,w:360,h:56}))startZombie();if(inBtn(x,y,{x:90,y:708,w:360,h:56}))G.mode='lobby';}return;}
+
+if(G.mode==='pvp'){
+  // 1. 如果已经赢了或输了，点按钮退回大厅或重开
+  if(G.pvpResult){
+    if(inBtn(x,y,{x:90,y:640,w:360,h:56})){startPvp();return;}
+    if(inBtn(x,y,{x:90,y:708,w:360,h:56})){G.mode='lobby';return;}
+    return;
+  }
+  
+  // 2. 点击屏幕下方的红色炸弹按钮，发射！
+  if(G.pvpBombs > 0 && x>=W/2-90 && x<=W/2+90 && y>=H-160 && y<=H-100){
+    G.pvpBombs--;
+    G.shake = 10;
+    // 发送炸弹消息给全场其他玩家
+    if(mqttClient && mqttClient.connected) {
+  mqttClient.publish('wjw-runner-v1/' + currentRoomId, JSON.stringify({
+    type: 'pvp_bomb',
+    name: G.nickname || '玩家',
+    userId: mqttClient._myId,
+    item: G.pvpItem // 👈 把这行加上！告诉对面你扔的是什么
+  }));
+}
+    G.milestoneMsg = '💣 你扔出了炸弹！'; G.milestoneMsgT = 1.5;
+    beep(200,0.2,'square',0.1,50); 
+    return;
+  }
+  // 3. 如果没点中炸弹，那就是跳跃
+  onJumpPress(); 
+  return;
+}
+// 👇 顺便注意一下，截图 7297 行下面那个 pvpdead 的判定，如果里面还有旧代码，也要替换成下面这个👇
+if(G.mode==='pvpdead'){
+  if(G.deadT>0.7){
+    if(inBtn(x,y,{x:90,y:640,w:360,h:56}))startPvp();
+    if(inBtn(x,y,{x:90,y:708,w:360,h:56}))G.mode='lobby';
+  }
+  return;
+}
+if(G.mode==='pvpdead'){if(G.deadT>0.7){if(inBtn(x,y,{x:90,y:640,w:360,h:56}))startPvp();if(inBtn(x,y,{x:90,y:708,w:360,h:56}))G.mode='lobby';}return;}
   if(G.mode==='coindone'){
     if(CR.resultT<0.6)return;
     if(inBtn(x,y,{x:90,y:600,w:360,h:56})){startCoinRush();return;}
@@ -7066,27 +7908,56 @@ cv.addEventListener('pointerdown',function(e){
   const r=cv.getBoundingClientRect();
   const x=(e.clientX-r.left)/r.width*W;
   const y=(e.clientY-r.top)/r.height*H;
-  if(G.mode==='grow'&&G.growthTab==='achievement'&&!G.skinPanel.open){
-    let hit=false;
-    for(let i=0;i<ACHIEVEMENTS.length;i++){const cb=achClaimRect(i),cbY=cb.y-G.growScroll;if(cbY<ACH_TOP||cbY+cb.h>ACH_BOT)continue;if(x>=cb.x&&x<=cb.x+cb.w&&y>=cbY&&y<=cbY+cb.h){hit=true;break;}}
-    if(inBtn(x,y,GROW_BACK)||inBtn(x,y,T_UPG)||inBtn(x,y,T_ACH)||inBtn(x,y,T_DLY)||inBtn(x,y,T_WISH)||inBtn(x,y,T_PET)||hit){handlePointerSimple(x,y);return;}
-    pointerDrag.down=true;pointerDrag.startX=x;pointerDrag.startY=y;
-    pointerDrag.scrollStart=G.growScroll;pointerDrag.isDragging=false;return;
+  
+  // 如果是成就或通行证界面，先开启拖拽模式（不直接判定点击）
+  if(G.mode==='grow' && (G.growthTab==='achievement' || G.growthTab==='season') && !G.skinPanel.open){
+    pointerDrag.down=true;
+    pointerDrag.startX=x;
+    pointerDrag.startY=y;
+    pointerDrag.scrollStart=G.growScroll;
+    pointerDrag.isDragging=false;
+    return;
   }
+  
+  // 其他界面直接触发点击
   handlePointerSimple(x,y);
 },{passive:false});
+
 cv.addEventListener('pointermove',function(e){
+if(G.mode === 'arcade' && G.arcadeState === 'playing'){
+  e.preventDefault();
+  const r=cv.getBoundingClientRect();
+  const y=(e.clientY-r.top)/r.height*H;
+  // 跟随手指，并限制在天空和地面之间
+  G.arcadePlayerY = clamp(y, 100, GROUND_Y - 20);
+  return;
+}
   if(!pointerDrag.down)return;
-  if(G.mode!=='grow'||G.growthTab!=='achievement')return;
+  if(G.mode!=='grow' || (G.growthTab!=='achievement' && G.growthTab!=='season')) return;
+  
+  // 核心：阻止手机浏览器的默认页面滚动
+  e.preventDefault(); 
+  
   const r=cv.getBoundingClientRect();
   const y=(e.clientY-r.top)/r.height*H;
   const dy=y-pointerDrag.startY;
-  if(Math.abs(dy)>6)pointerDrag.isDragging=true;
-  if(pointerDrag.isDragging)G.growScroll=clamp(pointerDrag.scrollStart-dy,0,getMaxGrowScroll());
+  
+  // 只要滑动超过 6 像素，就算拖拽，不算点击
+  if(Math.abs(dy)>6) pointerDrag.isDragging=true;
+  
+  if(pointerDrag.isDragging){
+    let maxScroll = G.growthTab === 'achievement' 
+      ? getMaxGrowScroll() 
+      : Math.max(0, SEASON_REWARDS.length * 90 - 440);
+    G.growScroll = clamp(pointerDrag.scrollStart - dy, 0, maxScroll);
+  }
 },{passive:false});
+
 cv.addEventListener('pointerup',function(e){
   if(!pointerDrag.down)return;
   pointerDrag.down=false;
+  
+  // 如果松手时没有发生拖拽，说明玩家只是想点击
   if(!pointerDrag.isDragging){
     const r=cv.getBoundingClientRect();
     const x=(e.clientX-r.left)/r.width*W;
@@ -7095,24 +7966,48 @@ cv.addEventListener('pointerup',function(e){
   }
   pointerDrag.isDragging=false;
 },{passive:false});
-cv.addEventListener('pointercancel',function(){pointerDrag.down=false;pointerDrag.isDragging=false;},{passive:false});
+
+cv.addEventListener('pointercancel',function(){
+  pointerDrag.down=false;
+  pointerDrag.isDragging=false;
+},{passive:false});
 const btnJump=document.getElementById('btnJump');
 const btnSlide=document.getElementById('btnSlide');
 const btnFly=document.getElementById('btnFly');
 const isTouch=('ontouchstart'in window)||(window.matchMedia&&window.matchMedia('(pointer:coarse)').matches);
 function syncTouchButtons(){
-  if(!isTouch)return;
-  const skillModes=['playing','boss','endless','coin','sd'].includes(G.mode);
-  if(G.mode==='playing'||G.mode==='boss'||G.mode==='coin'||G.mode==='endless'||G.mode==='sd'){
+  if(!isTouch) return;
+  
+  // 所有跑酷模式
+  const playModes = ['playing','boss','coin','endless','sd','zombie','pvp'].includes(G.mode);
+  
+  if(playModes){
     btnJump.classList.add('show');
     btnSlide.classList.add('show');
-    const ch=getChar();
-    if(skillModes&&(ch.id==='kcb'||ch.id==='ylz'||ch.id==='zyc'||ch.id==='opl'||ch.id==='zzy'))btnFly.classList.add('show');
-    else btnFly.classList.remove('show');
-  }else{
+    
+    const ch = getChar();
+    // 1. 如果角色拥有主动技能，显示【技能】按钮
+    if(ch.id==='kcb'||ch.id==='ylz'||ch.id==='zyc'||ch.id==='opl'||ch.id==='zzy'||ch.id==='zxf'||ch.id==='kang') {
+      btnFly.classList.add('show');
+    } else {
+      btnFly.classList.remove('show');
+    }
+
+    // 2. 显示【装备】按钮（如果装备达标，或者是康神）
+    const hasEquipSkill = (G.equips.boots>=5 || G.equips.armor>=8 || G.equips.ring>=10);
+    const btnEquip = document.getElementById('btnEquip');
+    if (btnEquip) {
+      if (hasEquipSkill || ch.id==='kang') btnEquip.classList.add('show');
+      else btnEquip.classList.remove('show');
+    }
+    
+  } else {
+    // 不在跑酷模式，隐藏所有按钮
     btnJump.classList.remove('show');
     btnSlide.classList.remove('show');
     btnFly.classList.remove('show');
+    const btnEquip = document.getElementById('btnEquip');
+    if (btnEquip) btnEquip.classList.remove('show');
   }
 }
 function bindBtn(el,od,ou){
@@ -7127,15 +8022,25 @@ function bindBtn(el,od,ou){
     el.addEventListener('mouseleave',function(){if(ou)ou();});
   }
 }
-bindBtn(btnJump,function(){if(G.mode==='playing'||G.mode==='boss'||G.mode==='coin'||G.mode==='endless'||G.mode==='sd')onJumpPress();},null);
-bindBtn(btnSlide,function(){if(G.mode==='playing'||G.mode==='boss'||G.mode==='coin'||G.mode==='endless'||G.mode==='sd')keys.down=true;},function(){keys.down=false;});
+bindBtn(btnJump,function(){if(G.mode==='playing'||G.mode==='boss'||G.mode==='coin'||G.mode==='endless'||G.mode==='sd'||G.mode==='zombie'||G.mode==='pvp')onJumpPress();},null);
+bindBtn(btnSlide,function(){if(G.mode==='playing'||G.mode==='boss'||G.mode==='coin'||G.mode==='endless'||G.mode==='sd'||G.mode==='zombie'||G.mode==='pvp')keys.down=true;},function(){keys.down=false;});
+// 角色专属技能按钮
 bindBtn(btnFly,function(){
   const ch=getChar();
+  if(!['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) return;
+  
   if(ch.id==='kcb')tryActivateFlight();
   else if(ch.id==='ylz')tryActivateJufei();
   else if(ch.id==='zyc')tryActivateDash();
   else if(ch.id==='zzy')tryActivateZzyFreeze();
   else if(ch.id==='opl')tryActivateSoul();
+  else if(ch.id==='zxf')tryActivateZXF();     
+  else if(ch.id==='kang')tryActivateKang1();  
+},null);
+
+// 装备专属技能按钮（独立出来，不再和角色技能嵌套）
+bindBtn(document.getElementById('btnEquip'),function(){
+  if(['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) tryActivateEquipSkill();
 },null);
 function render(){
   if(G.mode==='duel'){syncTouchButtons();renderDuel();return;}
@@ -7145,6 +8050,12 @@ if(G.mode==='mp_lobby'){syncTouchButtons();drawMpLobby();return;}
 if(G.mode==='mp_result'){syncTouchButtons();drawMpResult();return;}
   if(G.mode==='boss'||G.mode==='bossdead'){renderBoss();return;}
   if(G.mode==='coin'||G.mode==='coindone'){renderCoinRush();return;}
+  if(G.mode==='zombie'||G.mode==='zombiedead'||G.mode==='zombiewin'){renderZombie();return;}
+  if(G.mode==='arcade'){renderArcade();return;}
+  if(G.mode==='arcade_menu'){ renderArcadeMenu(); return; }
+if(G.mode==='flappy'){ renderFlappy(); return; }
+if(G.mode==='slot'){ renderSlot(); return; }
+if(G.mode==='pvp'||G.mode==='pvpdead'){renderPvp();return;}
   if(G.mode==='sd'||G.mode==='sddead'){renderSpeedDemon();return;}
   if(G.mode==='endless'||G.mode==='endlessdead'){renderEndless();return;}
   syncTouchButtons();
@@ -7157,7 +8068,8 @@ if(G.mode==='mp_result'){syncTouchButtons();drawMpResult();return;}
       if(o.type==='box')drawBox(o);else if(o.type==='doublebox')drawDoubleBox(o);
       else if(o.type==='spikes')drawSpikes(o);else if(o.type==='saw')drawSaw(o);
       else if(o.type==='lowbar')drawLowBar(o);
-else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='drone')drawDrone(o);
+else if(o.type==='slidebar')drawSlideBar(o);else if(o.type==='skymine')drawSkyMine(o);
+else if(o.type==='drone')drawDrone(o);
       else if(o.type==='hologram')drawHologram(o);else if(o.type==='cactus')drawCactus(o);
       else if(o.type==='icicle')drawIcicle(o);else if(o.type==='fireball')drawFireball(o);
       else if(o.type==='petalwind')drawPetalWind(o);
@@ -7173,6 +8085,7 @@ if(G.mode==='playing'||G.mode==='dead'){drawPlayer();drawGhostPlayers();drawComp
   else if(G.mode==='shop'){drawShop();if(G.skinPanel.open)drawSkinPanel();}
   else if(G.mode==='map')drawMapSelect();
   else if(G.mode==='grow')drawGrow();
+  else if(G.mode==='forge')drawForge();
   else if(G.mode==='playing')drawHUD();
   else if(G.mode==='dead'){drawHUD();drawDeadUI();}
 }
@@ -7190,7 +8103,7 @@ function loop(ts){
   update(dt);
   render();
 }
-requestAnimationFrame(loop);
+requestAnimationFrame(loop)
 
 // 启动：默认游客进入，有 token 则后台静默同步云存档
 window.addEventListener('DOMContentLoaded', () => {
@@ -7233,6 +8146,1091 @@ async function syncCloudSaveSilent() {
     console.warn('云存档静默同步失败', err);
   }
 }
+// ==================== 街机厅菜单 ====================
+function updateArcadeMenu(dt){
+  G.time += dt;
+  if(Math.random()<dt*5) addParticle(rand(0,W), rand(0,H), rand(-20,20), rand(-50,-10), rand(0.5,1), '#ffd93d', rand(1,3), 0);
+  updateParticles(dt);
+}
+
+function renderArcadeMenu(){
+  drawSky(); ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+  drawParticles();
+  
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font='bold 40px '+FONT; ctx.fillStyle='#ff40c0'; ctx.shadowColor='#ff40c0'; ctx.shadowBlur=20;
+  ctx.fillText('🕹️ 乐子猫街机厅', W/2, 100); ctx.shadowBlur=0;
+  
+  // 游戏1：保卫金武门
+  drawArcadeMachine(90, 200, '保卫金武门', '射击防守', [79,209,255]);
+  // 游戏2：像素鸟
+  drawArcadeMachine(90, 400, '像素鸟', '手速挑战', [255,210,60]);
+  // 游戏3：老虎机
+  drawArcadeMachine(90, 600, '幸运老虎机', '搏一搏单车变摩托', [255,90,90]);
+  
+  drawUIButton({x:150,y:800,w:240,h:56},'返 回 大 厅',[140,180,240],true);
+}
+
+function drawArcadeMachine(x, y, title, desc, rgb){
+  ctx.fillStyle='rgba(22,34,70,0.9)'; roundRect(x, y, 360, 150, 16); ctx.fill();
+  ctx.strokeStyle=`rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.8)`; ctx.lineWidth=2; roundRect(x, y, 360, 150, 16); ctx.stroke();
+  
+  ctx.textAlign='left'; ctx.font='bold 26px '+FONT; ctx.fillStyle='#fff';
+  ctx.fillText(title, x + 40, y + 50);
+  ctx.font='14px '+FONT; ctx.fillStyle=`rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.8)`;
+  ctx.fillText(desc, x + 40, y + 90);
+  
+  // 投币口闪烁
+  if(Math.sin(G.time*5)>0){
+    ctx.fillStyle='#ffd700'; ctx.beginPath(); ctx.arc(x + 300, y + 75, 10, 0, Math.PI*2); ctx.fill();
+  }
+}
+// ==================== 街机厅：保卫金武门 ====================
+function startArcade(){
+  initAudio(); G.mode='arcade'; G.arcadeState='playing';
+  G.arcadeTime = 30; G.arcadeHp = 5; G.arcadeEnemies = []; G.arcadeBullets = [];
+  G.arcadeReward = 0; G.arcadeShootCD = 0;
+  G.arcadePlayerY = GROUND_Y - 200; // 初始高度
+  G.milestoneMsg='🕹️ 保卫金武门！滑动屏幕移动，自动射击！'; G.milestoneMsgT=3;
+}
+
+function updateArcade(dt){
+  if(G.shake>0.4){G.shake*=Math.pow(0.015,dt);if(G.shake<0.4)G.shake=0;}else G.shake=0;
+
+  G.time += dt;
+  if(G.arcadeState !== 'playing') return;
+
+  G.arcadeTime -= dt;
+// 👇 核心修复：只要时间归零，立刻结算，不给怪物任何机会！
+if(G.arcadeTime <= 0){
+  G.arcadeState = 'win'; 
+  G.arcadeReward = 1000; 
+  G.totalCoins += 1000; 
+  markDirty(); 
+  return;
+}
+
+  // ===== 1. 自动连射（射速调慢，更有节奏感）=====
+  G.arcadeShootCD -= dt;
+  if(G.arcadeShootCD <= 0) {
+    G.arcadeShootCD = 0.2; // 👈 从 0.09 降到 0.2，一秒5发
+    G.arcadeBullets.push({ x: PLAYER_X + 40, y: G.arcadePlayerY - 20 });
+    beep(900, 0.05, 'square', 0.02);
+  }
+// ===== 2. 生成敌人（怪潮模式，疯狂出怪！）=====
+if(!G.arcadeSpawnCD) G.arcadeSpawnCD = 0;
+G.arcadeSpawnCD -= dt;
+
+// 同屏上限提高到 10 只，出怪极快
+if(G.arcadeEnemies.length < 10 && G.arcadeSpawnCD <= 0) {
+  G.arcadeSpawnCD = rand(0.4, 0.7); // 👈 每 0.4~0.7 秒刷一次
+  
+  let spawnCount = Math.random() < 0.3 ? (Math.random() < 0.5 ? 2 : 3) : 1; 
+  
+  for(let k=0; k<spawnCount; k++){
+    let isFlying = Math.random() < 0.5;
+    G.arcadeEnemies.push({
+      x: W + 50 + (k * 50), // 如果一次刷多只，把它们错开一点距离
+      y: isFlying ? rand(100, 450) : GROUND_Y - 80, 
+      hp: Math.random() < 0.2 ? 2 : 1, 
+      speed: rand(120, 180) + G.time * 4, // 速度稍微提一点，更有压迫感
+      w: 40, h: 40,
+      type: isFlying ? 'fly' : 'ground',
+      phase: rand(0, 6.28)
+    });
+  }
+}
+
+
+  // ===== 3. 敌人移动 =====
+  for(let i=G.arcadeEnemies.length-1; i>=0; i--){
+    let e = G.arcadeEnemies[i];
+    e.x -= e.speed * dt;
+    if(e.type === 'fly') e.y += Math.sin(G.time*8 + e.phase) * 4; 
+
+    if(e.x < PLAYER_X + 20) {
+      G.arcadeHp--; G.arcadeEnemies.splice(i,1); G.shake = 15;
+      beep(150,0.3,'sawtooth',0.1,50);
+    }
+
+    if(G.arcadeHp <= 0) { G.arcadeState = 'lose'; G.arcadeReward = 200; G.totalCoins += 200; markDirty(); return; }
+  }
+
+  // ===== 4. 子弹直线移动与碰撞（加宽判定，绝不漏怪）=====
+  for(let i=G.arcadeBullets.length-1; i>=0; i--){
+    let b = G.arcadeBullets[i];
+    
+    b.x += 800 * dt; // 👈 子弹速度从 1200 降到 800，防止穿透
+    
+    if(b.x > W + 50) { G.arcadeBullets.splice(i,1); continue; }
+    
+    for(let j=G.arcadeEnemies.length-1; j>=0; j--){
+      let e = G.arcadeEnemies[j];
+      
+      // 👇 核心修复：扩大判定框！左右加大 20，上下加大 30。只要子弹擦到边就算命中！
+      if(b.x > e.x - 20 && b.x < e.x + e.w + 20 && b.y > e.y - 30 && b.y < e.y + e.h + 30){
+        e.hp--; G.arcadeBullets.splice(i,1);
+        beep(800, 0.05, 'sine', 0.05);
+        
+        // 打中时的爆炸特效
+        for(let k=0; k<6; k++) addParticle(b.x, b.y, rand(-150,150), rand(-150,150), 0.3, '#00d9ff', 4, 0);
+        
+        if(e.hp <= 0) {
+          G.arcadeEnemies.splice(j,1);
+          G.arcadeReward += 20; 
+          for(let k=0; k<10; k++) addParticle(e.x, e.y, rand(-200,200), rand(-200,200), 0.5, '#ff4040', 5, 200);
+        }
+        break;
+      }
+    }
+  }
+  updateParticles(dt);
+}
+
+function renderArcade(){
+  syncTouchButtons();
+  ctx.save(); if(G.shake>0.4) ctx.translate(rand(-G.shake,G.shake),rand(-G.shake,G.shake));
+  
+  // 夜空背景
+  drawSky(); 
+  ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,0,W,H);
+  drawHills(); drawGround();
+  
+  // 金武门
+  ctx.fillStyle = '#8a2020'; roundRect(PLAYER_X - 80, GROUND_Y - 180, 40, 180, 5); ctx.fill();
+  ctx.fillStyle = '#ffd700'; ctx.font = 'bold 24px '+FONT; ctx.fillText('门', PLAYER_X - 60, GROUND_Y - 80);
+
+  // 金武（会跟着手指移动）
+  ctx.save(); ctx.translate(PLAYER_X, G.arcadePlayerY); ctx.scale(1.2, 1.2);
+  drawCharacterBody(getCharById('mdf'), 0, false); ctx.restore();
+
+// 敌人
+for(let e of G.arcadeEnemies) {
+  if(e.type === 'ground') {
+    // 地上的紫色坦克
+    ctx.fillStyle = '#8e44ad'; 
+    roundRect(e.x, e.y, e.w, e.h, 8); ctx.fill();
+    ctx.fillStyle = '#c060ff'; 
+    ctx.fillRect(e.x + 10, e.y - 10, 10, 10); // 炮管
+  } else if(e.type === 'fly') {
+    // 天上的红色飞碟
+    ctx.fillStyle = '#ff4040'; 
+    ctx.beginPath(); ctx.ellipse(e.x + 20, e.y + 20, 25, 10, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#ffd700'; 
+    ctx.beginPath(); ctx.arc(e.x + 20, e.y + 15, 8, 0, Math.PI); ctx.fill();
+  } else {
+    // BOSS 巨型战舰
+    ctx.fillStyle = '#2c3e50'; roundRect(e.x, e.y, e.w, e.h, 16); ctx.fill();
+    ctx.strokeStyle = '#ff2020'; ctx.lineWidth = 3; roundRect(e.x, e.y, e.w, e.h, 16); ctx.stroke();
+    ctx.fillStyle = '#ffd700'; ctx.font = 'bold 16px '+FONT; ctx.textAlign='center'; ctx.fillText('BOSS', e.x+40, e.y+45);
+  }
+}
+
+  // 子弹
+  for(let b of G.arcadeBullets) {
+  ctx.fillStyle = '#00d9ff'; 
+  ctx.shadowColor = '#7ee0ff'; 
+  ctx.shadowBlur = 15;
+  ctx.fillRect(b.x, b.y - 3, 25, 6); // 长条形的粗激光
+  ctx.shadowBlur = 0;
+}
+
+  drawParticles(); ctx.restore();
+
+  // HUD
+  ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = 'bold 24px '+FONT; ctx.fillStyle = '#ff5c7a';
+  ctx.fillText('❤️'.repeat(Math.max(0, G.arcadeHp)), W/2, 40);
+  ctx.font = 'bold 20px '+FONT; ctx.fillStyle = '#fff';
+  ctx.fillText('时间: ' + Math.max(0, Math.ceil(G.arcadeTime)) + 's', W/2, 80);
+  ctx.fillStyle = '#ffd93d'; ctx.fillText('得分: ' + G.arcadeReward, W/2, 115);
+  ctx.restore();
+
+  if(G.arcadeState === 'win' || G.arcadeState === 'lose'){
+    ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0,0,W,H);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 50px '+FONT; 
+    ctx.fillStyle = G.arcadeState === 'win' ? '#7ee0ff' : '#ff5c7a';
+    ctx.fillText(G.arcadeState === 'win' ? '🏆 守门成功！' : '💀 门被攻破', W/2, H/2 - 50);
+    ctx.font = 'bold 24px '+FONT; ctx.fillStyle = '#ffd93d';
+    ctx.fillText('获得奖励: ' + G.arcadeReward + ' 金币', W/2, H/2 + 20);
+    drawUIButton({x:90,y:640,w:360,h:56},'再 玩 一 次',[110,200,120],true);
+    drawUIButton({x:90,y:708,w:360,h:56},'返 回 大 厅',[140,180,240],true);
+  }
+}
+// ==================== 像素鸟 ====================
+function startFlappy(){
+  G.mode='flappy'; G.flappyY = 300; G.flappyVY = 0; G.flappyPipes = []; G.flappyScore = 0; G.flappyDead = false; G.flappyTimer = 0;
+  G.flappyCD = 0;
+  G.milestoneMsg='🐦 疯狂点击屏幕起飞！'; G.milestoneMsgT=2;
+}
+
+function updateFlappy(dt){
+  G.time += dt;
+  
+  // ===== 死亡后的物理引擎 =====
+  if(G.flappyDead){
+    if (G.flappyY < GROUND_Y - 40) {
+      // 还在空中，受重力加速下落
+      G.flappyVY += 2000 * dt; 
+      G.flappyY += G.flappyVY * dt;
+    } else {
+      // 已经砸到地上了
+      G.flappyY = GROUND_Y - 40; 
+      G.flappyVY = 0;
+      G.flappyTimer += dt; // 落地后才开始计时，1秒后弹结算
+    }
+    return;
+  }
+  
+  // ===== 正常存活物理 =====
+  G.flappyVY += 1800 * dt; 
+  G.flappyY += G.flappyVY * dt;
+  
+  // 生成水管
+  if(!G.flappyCD) G.flappyCD = 0;
+  G.flappyCD -= dt;
+  if(G.flappyCD <= 0){
+    G.flappyCD = 1.4;
+    let gapY = rand(180, GROUND_Y - 180);
+    G.flappyPipes.push({ x: W + 50, gapY: gapY, passed: false });
+  }
+  
+  // 移动水管
+  for(let i=G.flappyPipes.length-1; i>=0; i--){
+    let p = G.flappyPipes[i];
+    p.x -= 220 * dt;
+    if(p.x < -100) G.flappyPipes.splice(i,1);
+    
+    // 计分
+    if(!p.passed && p.x < PLAYER_X - 30){
+      p.passed = true; G.flappyScore++; beep(1200, 0.1, 'sine', 0.05);
+    }
+    
+    // 撞管子判定
+    if(p.x < PLAYER_X + 20 && p.x + 60 > PLAYER_X - 20){
+      if(G.flappyY < p.gapY - 70 || G.flappyY > p.gapY + 70){
+        triggerFlappyDeath();
+      }
+    }
+  }
+  
+  // 撞天花板或地面判定
+  if(G.flappyY > GROUND_Y - 40 || G.flappyY < 0){ 
+    triggerFlappyDeath(); 
+  }
+  
+  updateParticles(dt);
+}
+
+// 辅助函数：触发死亡瞬间的反馈
+function triggerFlappyDeath() {
+  if (G.flappyDead) return;
+  G.flappyDead = true; 
+  G.shake = 20; 
+  beep(150, 0.3, 'sawtooth', 0.1, 50);
+  G.flappyVY = -450; // 核心细节：撞击瞬间先往上弹一下！
+  G.flappyTimer = 0;
+  G.totalCoins += G.flappyScore * 20; 
+  markDirty();
+}
+
+function renderFlappy(){
+  // 1. 天空背景
+  ctx.fillStyle = '#4ec0ca'; ctx.fillRect(0,0,W,H);
+  
+  // 2. 滚动的云层（视差效果）
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  for(let i=0; i<5; i++){
+    let cx = (W - (G.time * 50 + i * 150) % (W + 200));
+    let cy = 100 + i * 80;
+    ctx.beginPath(); ctx.arc(cx, cy, 40, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 30, cy - 15, 30, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx - 25, cy + 10, 25, 0, Math.PI*2); ctx.fill();
+  }
+  
+  // 3. 画水管（带立体的管口）
+  for(let p of G.flappyPipes){
+    // 上水管
+    const topH = p.gapY - 80;
+    const bgTop = ctx.createLinearGradient(p.x, 0, p.x + 60, 0);
+    bgTop.addColorStop(0, '#5aaf4f'); bgTop.addColorStop(0.5, '#91dc5a'); bgTop.addColorStop(1, '#5aaf4f');
+    ctx.fillStyle = bgTop; ctx.fillRect(p.x, 0, 60, topH);
+    ctx.strokeStyle = '#3a703a'; ctx.lineWidth = 2; ctx.strokeRect(p.x, 0, 60, topH);
+    // 管口
+    ctx.fillStyle = '#5aaf4f'; ctx.fillRect(p.x - 5, topH - 25, 70, 25);
+    ctx.strokeRect(p.x - 5, topH - 25, 70, 25);
+
+    // 下水管
+    const botH = GROUND_Y - (p.gapY + 80);
+    const bgBot = ctx.createLinearGradient(p.x, 0, p.x + 60, 0);
+    bgBot.addColorStop(0, '#5aaf4f'); bgBot.addColorStop(0.5, '#91dc5a'); bgBot.addColorStop(1, '#5aaf4f');
+    ctx.fillStyle = bgBot; ctx.fillRect(p.x, p.gapY + 80, 60, botH);
+    ctx.strokeStyle = '#3a703a'; ctx.strokeRect(p.x, p.gapY + 80, 60, botH);
+    // 管口
+    ctx.fillStyle = '#5aaf4f'; ctx.fillRect(p.x - 5, p.gapY + 80, 70, 25);
+    ctx.strokeRect(p.x - 5, p.gapY + 80, 70, 25);
+  }
+  
+  // 4. 画地面
+  ctx.fillStyle = '#ded895'; ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.fillStyle = '#c0b860'; ctx.fillRect(0, GROUND_Y, W, 10);
+  // 地面草皮
+  ctx.fillStyle = '#73bf2e'; ctx.fillRect(0, GROUND_Y, W, 15);
+
+  // 5. 画科超比（强制切换为飞行姿态）
+  ctx.save(); 
+  ctx.translate(PLAYER_X, G.flappyY);
+
+// 👇 核心修复：顺滑的死亡翻转
+if(G.flappyDead) {
+  // 让旋转角度根据下落速度动态计算，越掉越快，头朝下
+  let rot = Math.min(G.flappyVY / 1500, Math.PI / 2); 
+  ctx.rotate(rot); 
+} else {
+  // 存活时根据升降微微抬头/低头
+  ctx.rotate(clamp(G.flappyVY / 1200, -0.4, 0.6)); 
+}
+  if(G.flappyDead) {
+    ctx.rotate(Math.PI/2); // 撞毁时旋转掉下来
+  } else {
+    ctx.rotate(clamp(G.flappyVY / 1200, -0.4, 0.6)); // 上升仰头，下落低头
+  }
+  // 这里强制使用科超比的飞行模型
+  const kcb = getCharById('kcb');
+  const oldFlying = P.flying;
+  P.flying = true; 
+  drawCharacterBody(kcb, G.time*15, false, true); // 翅膀疯狂扇动
+  P.flying = oldFlying;
+  ctx.restore();
+  
+  // 6. 分数板
+  ctx.fillStyle='rgba(0,0,0,0.5)'; roundRect(W/2 - 60, 40, 120, 60, 10); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.font='bold 40px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(G.flappyScore, W/2, 72);
+  
+  // 7. 死亡结算
+  if(G.flappyDead && G.flappyTimer > 1){
+    ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#ff5c7a'; ctx.font='bold 44px '+FONT; ctx.fillText('💥 撞毁啦！', W/2, H/2-80);
+    ctx.fillStyle='#ffd93d'; ctx.font='bold 24px '+FONT; 
+    ctx.fillText('穿过了 '+G.flappyScore+' 个水管', W/2, H/2-20);
+    ctx.fillText('获得金币: '+(G.flappyScore*20), W/2, H/2+20);
+    
+    drawUIButton({x:90,y:640,w:360,h:56},'再 来 一 次',[110,200,120],true);
+    drawUIButton({x:90,y:708,w:360,h:56},'返 回 街 机 厅',[140,180,240],true);
+  }
+}
+// ==================== 幸运老虎机 ====================
+function startSlot(){
+  G.mode='slot'; G.slotState='idle'; G.slotIcons=['🍒','🍋','🔔','💎','7️⃣']; 
+  G.slotResult = ['❓','❓','❓']; G.slotTimer = 0; G.slotMsg = '点击屏幕摇奖 (100金币)';
+}
+
+function updateSlot(dt){
+  G.time += dt;
+  if(G.slotState === 'rolling'){
+    G.slotTimer += dt;
+    // 滚动特效
+    if(Math.random()<dt*20){
+      G.slotResult = [
+        G.slotIcons[Math.floor(Math.random()*G.slotIcons.length)],
+        G.slotIcons[Math.floor(Math.random()*G.slotIcons.length)],
+        G.slotIcons[Math.floor(Math.random()*G.slotIcons.length)]
+      ];
+    }
+    
+    if(G.slotTimer > 1.5){
+      G.slotTimer = 0;
+      G.slotState = 'idle';
+      // 结算
+      if(G.slotResult[0]===G.slotResult[1] && G.slotResult[1]===G.slotResult[2]){
+        G.slotMsg = '🎉 大奖！+5000 金币！'; G.totalCoins += 5000; beep(1200,0.3,'triangle',0.1,1800);
+      } else if(G.slotResult[0]===G.slotResult[1] || G.slotResult[1]===G.slotResult[2] || G.slotResult[0]===G.slotResult[2]){
+        G.slotMsg = '✨ 小奖！+200 金币！'; G.totalCoins += 200; beep(880,0.2,'sine',0.08,1200);
+      } else {
+        G.slotMsg = '😢 差一点，再接再厉！';
+      }
+      markDirty();
+    }
+  }
+}
+
+function renderSlot(){
+  drawSky(); ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+  
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font='bold 40px '+FONT; ctx.fillStyle='#ffd700'; ctx.fillText('🎰 幸运老虎机', W/2, 120);
+  
+  // 摇奖机主体
+  ctx.fillStyle='#222'; roundRect(60, 200, 420, 250, 20); ctx.fill();
+  ctx.strokeStyle='#ffd700'; ctx.lineWidth=4; roundRect(60, 200, 420, 250, 20); ctx.stroke();
+  
+  // 三个轮盘
+  for(let i=0; i<3; i++){
+    ctx.fillStyle='#fff'; roundRect(90 + i*130, 250, 100, 150, 10); ctx.fill();
+    ctx.font='60px '+FONT; ctx.fillStyle='#000';
+    ctx.fillText(G.slotResult[i], 140 + i*130, 325);
+  }
+  
+  ctx.font='bold 24px '+FONT; ctx.fillStyle='#ff5c7a'; ctx.fillText(G.slotMsg, W/2, 520);
+  
+  if(G.slotState === 'idle'){
+    drawUIButton({x:140, y:600, w:260, h:60},'摇 奖 (-100金币)', G.totalCoins>=100?[255,210,60]:[100,100,100], G.totalCoins>=100);
+  } else {
+    drawUIButton({x:140, y:600, w:260, h:60},'摇奖中...', [140,180,240], false);
+  }
+  
+  drawUIButton({x:150, y:750, w:240, h:56},'返 回 街 机 厅',[140,180,240],true);
+}
+// ==================== 丧尸围城模式 ====================
+function startZombie(){
+G.zombieTargetDist = 20000; // 设定撤离终点为 2000 米
+  initAudio();G.mode='zombie';G.time=0;G.deadT=0;
+  G.speed=220;G.baseSpeed=220;G.distance=0;G.coins=0;G.shake=0;
+  G.nextSpawn=800;G.nextCoin=200;G.nextItem=999999;G.nextPortal=999999;
+  
+  G.zombieDist=300; // 初始距离 300
+  G.bullets=10;     // 初始只给 10 发子弹（必须省着用）
+  G.zShootTimer=0; 
+  G.zombieChargeT=0; 
+  G.isZombieCharging=false;
+  G.zThrowCD=2;
+  G.zWeaponLv=1; G.zKills=0; G.zBullets=[]; 
+  
+  obstacles.length=0;coins.length=0;items.length=0;particles.length=0;
+  resetPlayerState();pickWeather();initSeed(String(Date.now()) + Math.random());
+  G.milestoneMsg='🧟 极限求生！节约子弹！';G.milestoneMsgT=2.5;
+}
+function updateZombie(dt){
+  G.time+=dt;
+  if(G.shake>0.4){G.shake*=Math.pow(0.015,dt);if(G.shake<0.4)G.shake=0;}else G.shake=0;
+
+  if(G.mode==='zombiedead'){
+    G.deadT+=dt;P.vy+=GRAVITY*dt;P.y+=P.vy*dt;
+    if(P.y>=GROUND_Y){P.y=GROUND_Y;P.vy=0;}
+    P.rot=Math.min(P.rot+dt*7,Math.PI*0.5);return;
+  }
+  if(G.mode!=='zombie') return;
+  
+  const ch = getChar();
+
+  // ==========================================
+  // 【最高优先级】撤离成功判定！
+  // ==========================================
+  if(G.distance >= G.zombieTargetDist) { 
+    G.mode='zombiewin'; 
+    G.milestoneMsg='🚁 撤离成功！你活下来了！'; 
+    G.milestoneMsgT=5;
+    G.totalCoins += 1000; 
+    G.stats.zombieWins++;
+    markDirty(); 
+    beep(880,0.2,'triangle',0.08,1200);
+    return; 
+  }
+
+  // ==========================================
+  // 所有技能与状态倒计时
+  // ==========================================
+  if(P.slideCD>0) P.slideCD -= dt;
+  if(G.invulnT>0) G.invulnT -= dt;
+  if(G.zzyFreezeCD>0) G.zzyFreezeCD -= dt;
+  if(G.zzyFreezeT>0) G.zzyFreezeT -= dt;
+  if(G.zycCD>0) G.zycCD -= dt;
+  if(G.soulCD>0) G.soulCD -= dt;
+  if(G.equipActiveCD>0) G.equipActiveCD -= dt;
+  if(G.flightCD>0) G.flightCD -= dt;
+  if(G.reviveCD>0) G.reviveCD -= dt;
+  if(G.jufeiCD>0) G.jufeiCD -= dt;
+  if(G.magnetT>0) G.magnetT -= dt;
+  if(G.doubleT>0) G.doubleT -= dt;
+  if(G.debuffSlowT>0) G.debuffSlowT -= dt;
+  if(G.reviveCD>0)G.reviveCD-=dt; G.dashSpeedT -= dt;
+  // 👇 新角色技能CD
+  if(G.zxfCD>0) G.zxfCD -= dt;
+  if(G.kang1CD>0) G.kang1CD -= dt;
+  if(G.zxfLipT>0) G.zxfLipT -= dt;
+
+  // 张雨辰冲刺状态
+  if(G.dashT>0) { 
+    G.dashT -= dt; 
+    G.invulnT = Math.max(G.invulnT, 0.12);
+    const _t=1-Math.max(0,G.dashT/DASH_DURATION);
+    P.dashOffset=Math.sin(_t*Math.PI*0.5)*DASH_DIST;
+    P.vy=0; P.y+=(GROUND_Y-P.y)*Math.min(1,dt*14);
+    P.onGround=true; P.sliding=false; P.jumps=0; P.runPhase+=dt*22;
+    if(G.dashT<=0){ G.dashT=0; P.dashing=false; G.dashSpeedT=DASH_SPEED_TIME; G.invulnT=Math.max(G.invulnT,DASH_INVULN_TIME); }
+  } else if (P.dashOffset>0 && !P.dashing) {
+    P.dashOffset = Math.max(0, P.dashOffset - 500*dt);
+  }
+
+  // 欧破路灵体状态
+  if(G.soulActive){
+    G.soulT -= dt;
+    if(G.soulT<=0){
+      G.soulActive=false; G.shield=1; G.rushT=5; G.invulnT=Math.max(G.invulnT,2); G.shake=12;
+      G.milestoneMsg='✨ 灵体归来！护盾 + 加速 5 秒'; G.milestoneMsgT=2.2;
+    }
+  }
+
+  // 科超比飞行状态
+  if(P.flying){
+    G.flightT -= dt;
+    P.flyPhase += dt; P.runPhase += dt*4;
+    const ty = GROUND_Y - FLY_HEIGHT;
+    P.y += (ty - P.y) * Math.min(1, dt*5.5);
+    P.vy=0; P.onGround=false;
+    if(G.flightT<=0){
+      P.flying=false; G.flightActive=false; G.flightT=0; G.flightCD=FLY_COOLDOWN; P.vy=120; G.shake=6;
+    }
+  }
+
+  // 聚菲石头
+  if(G.jufeiShell){
+    const sh=G.jufeiShell;
+    sh.x += sh.vx*dt; sh.rot += dt*18; sh.life -= dt; sh.vx *= Math.pow(0.55,dt);
+    for(let i=obstacles.length-1;i>=0;i--){
+      const o=obstacles[i];
+      if(Math.abs(o.x+o.w/2-sh.x)<70 && Math.abs(o.y+o.h/2-sh.y)<90) obstacles.splice(i,1);
+    }
+    if(sh.life<=0 || sh.x>W+100) G.jufeiShell=null;
+  }
+
+  // ==========================================
+  // 基础移动与速度
+  // ==========================================
+  G.speed = Math.min(480, 220 + G.time*2); 
+  if(G.debuffSlowT>0) G.speed *= 0.6; // 张雪峰紫唇减速
+  const dx=G.speed*dt;
+  G.distance+=dx; G.scroll+=dx; G.bg1+=dx*0.05;
+
+  if(P.onGround && !P.sliding && !P.flying) P.runPhase += dt * (G.speed / 34);
+  P.squash += (1 - P.squash) * Math.min(1, dt * 13); 
+
+  // 丧尸追击
+  if (G.time > 2.0) { 
+    if(!G.isZombieCharging) {
+      const chaseSpeed = 1.2 + G.time * 0.08; 
+      G.zombieDist -= chaseSpeed * dt; 
+      if(G.zombieDist < 150 && Math.random() < dt * 0.6) {
+        G.isZombieCharging = true; G.zombieChargeT = 1.0;
+        G.shake = 15; beep(100, 0.4, 'sawtooth', 0.1, 40);
+      }
+    } else {
+      G.zombieChargeT -= dt; G.zombieDist -= 100 * dt; 
+      if(G.zombieChargeT <= 0) { 
+        if(G.zombieDist > 0) { G.isZombieCharging = false; G.zombieDist += 120; } 
+      }
+    }
+  }
+
+  // 丧尸扔飞刀
+  if(!G.zThrowCD) G.zThrowCD = 3;
+  G.zThrowCD -= dt;
+  if(G.zThrowCD <= 0 && G.zombieDist < 300) {
+    G.zThrowCD = rand(1.5, 3.0); 
+    obstacles.push({ type:'knife', x: -50, y: GROUND_Y - rand(30,100), w: 25, h: 25, vx: G.speed + 300 }); 
+  }
+
+  // 射击
+  if(G.bullets > 0) {
+    G.zShootTimer -= dt;
+    if(G.zShootTimer <= 0) {
+      G.zShootTimer = G.zWeaponLv >= 3 ? 0.08 : (G.zWeaponLv >= 2 ? 0.12 : 0.15); 
+      G.bullets--; G.zKills++; G.stats.zombieKills++;
+      let bCount = G.zWeaponLv >= 2 ? 2 : 1;
+      for(let i=0; i<bCount; i++) G.zBullets.push({ x: P.x, y: P.y - 40 + (i===0?0:rand(-15,15)), vx: -2000 });
+      beep(1200, 0.05, 'square', 0.02, 600);
+      if(G.zKills >= G.zWeaponLv * 40) { G.zWeaponLv++; G.milestoneMsg = '🔥 武器升级！'; G.milestoneMsgT = 2; }
+    }
+  }
+
+  // 处理子弹
+  for(let i=G.zBullets.length-1; i>=0; i--){
+    let b = G.zBullets[i]; b.x += b.vx * dt;
+    if(b.x < -100) G.zBullets.splice(i,1);
+    else if(b.x < 50) { G.zombieDist += 2; G.zBullets.splice(i,1); }
+  }
+
+  // 基础跳跃操作
+  if(!P.flying && !P.dashing && G.dashT<=0) {
+    if(keys.down && P.onGround && !P.slideLocked && P.slideCD<=0){
+      P.sliding=true; P.slideT=0.4; P.slideMaxT=0.4; P.slideLocked=true; P.slideCD=SLIDE_CD;
+    }
+    if(!keys.down) P.slideLocked=false; 
+    if(P.sliding){ P.slideT-=dt; if(P.slideT<=0) P.sliding=false; }
+    P.vy+=GRAVITY*dt; P.y+=P.vy*dt;
+    if(P.y>=GROUND_Y){ if(!P.onGround){P.squash=0.74;} P.y=GROUND_Y; P.vy=0; P.onGround=true; P.jumps=0; }else{ P.onGround=false; }
+  }
+
+  // 生成物
+  G.nextSpawn-=dx; 
+  if(G.nextSpawn<=0){ 
+    if(Math.random() < 0.25) obstacles.push({ type:'barrel', x:W+60, y:GROUND_Y-45, w:35, h:50 });
+    else if(Math.random() < 0.05) items.push({ type:'airdrop', x:W+60, y:GROUND_Y-160, r:22, phase:0 });
+    else spawnObstacle(); 
+    G.nextSpawn=G.speed*(1.6+Math.random()*1.0); 
+  }
+  
+  G.nextCoin-=dx; if(G.nextCoin<=0){ spawnCoins(); G.nextCoin=rand(300,500); }
+  
+  const pbox=playerBox();
+  
+  // 碰撞判定
+  for(let i=obstacles.length-1;i>=0;i--){
+    const o=obstacles[i]; 
+    if(!o) { obstacles.splice(i,1); continue; }
+    
+    if(o.type === 'knife') {
+      o.x += o.vx * dt; 
+      if(o.x > W + 100) { obstacles.splice(i,1); continue; }
+    } else { o.x -= dx; }
+    
+    if(o.x + o.w < -180){ obstacles.splice(i,1); continue; }
+    
+    // 飞行与技能无敌豁免
+    if(P.flying || G.invulnT>0 || G.dashT>0 || G.zzyFreezeT>0 || G.soulActive || G.jufeiShell){ 
+      if(aabb(pbox,mapObstacleBox(o))) obstacles.splice(i,1); 
+      continue; 
+    }
+
+    if(o.type === 'barrel') {
+      let hit = false;
+      for(let j=G.zBullets.length-1; j>=0; j--) {
+        if(G.zBullets[j].x < o.x + o.w && G.zBullets[j].x > o.x) { hit = true; G.zBullets.splice(j,1); break; }
+      }
+      if(hit && !o.exploded) {
+        o.exploded = true; G.zombieDist += 60; G.shake = 25;
+        for(let k=0;k<30;k++) addParticle(o.x, o.y, rand(-400,400), rand(-400,100), rand(0.4,1), Math.random()<0.5?'#ff9900':'#ff2020', rand(3,8), 400);
+        obstacles.splice(i,1); continue;
+      }
+    }
+
+    if(aabb(pbox,mapObstacleBox(o))){ 
+      if(o.type === 'barrel') { G.zombieDist -= 80; G.invulnT=1.0; obstacles.splice(i,1); G.shake=20; continue; }
+      G.zombieDist -= 50; G.invulnT=1.0; obstacles.splice(i,1); G.shake=15; 
+      
+      // 致死与张子阳复活
+      if(G.zombieDist <= 15) { 
+        if(ch.id === 'zzy' && G.reviveCD <= 0) {
+          G.reviveCD = Math.max(10, 25 - (getPet().passive.reviveCDMinus || 0));
+          G.zombieDist = 150; G.invulnT = 2.5; G.shield = 0;
+          G.stats.usedRevive++;
+          G.milestoneMsg = ch.skinId === 'zzy_flame' ? '🔥 火莲重生！丧尸退散！' : '✨ 张子阳 原地复活！'; 
+          G.milestoneMsgT = 2.2;
+          for(let k=obstacles.length-1;k>=0;k--) if(obstacles[k].x<W*1.25 && obstacles[k].x+obstacles[k].w>-220) obstacles.splice(k,1);
+          beep(880,0.15,'triangle',0.06,1400);
+          setTimeout(()=>beep(1180,0.2,'triangle',0.06,1600),120);
+          G.newAch=checkAchievements(); markDirty(); return; 
+        } else {
+          G.mode='zombiedead'; G.shake=30; beep(100, 0.5, 'sawtooth', 0.15, 30); return; 
+        }
+      }
+    }
+  }
+  
+  // 吃金币
+  const pcx=P.x+P.dashOffset, pcy=P.y-(P.sliding?14:32);
+  for(let i=coins.length-1;i>=0;i--){
+    const c=coins[i]; c.x-=dx; if(c.x<-80){coins.splice(i,1);continue;}
+    if((c.x-pcx)**2+(c.y-pcy)**2<1500){ 
+      coins.splice(i,1); G.coins++; 
+      G.zCoinCount = (G.zCoinCount || 0) + 1;
+      if(G.zCoinCount >= 2) { G.bullets++; G.zCoinCount = 0; }
+      G.zombieDist+=1; 
+    }
+  }
+
+  // 吃空投
+  for(let i=items.length-1;i>=0;i--){
+    const it=items[i]; it.x-=dx; if(it.x<-80){items.splice(i,1);continue;}
+    if((it.x-pcx)**2+(it.y-pcy)**2<2000){ items.splice(i,1); G.bullets += 10; G.shield = 1; G.milestoneMsg='🚁 空投！+10子弹 护盾'; G.milestoneMsgT=2; }
+  }
+  
+  // 追尾致死判定
+  if(G.zombieDist <= 15) { 
+    if(ch.id === 'zzy' && G.reviveCD <= 0) {
+      G.reviveCD = Math.max(10, 25 - (getPet().passive.reviveCDMinus || 0));
+      G.zombieDist = 150; G.invulnT = 2.5; G.shield = 0;
+      G.stats.usedRevive++;
+      G.milestoneMsg = ch.skinId === 'zzy_flame' ? '🔥 火莲重生！丧尸退散！' : '✨ 张子阳 原地复活！'; 
+      G.milestoneMsgT = 2.2;
+      for(let k=obstacles.length-1;k>=0;k--) if(obstacles[k].x<W*1.25 && obstacles[k].x+obstacles[k].w>-220) obstacles.splice(k,1);
+      beep(880,0.15,'triangle',0.06,1400);
+      setTimeout(()=>beep(1180,0.2,'triangle',0.06,1600),120);
+      G.newAch=checkAchievements(); markDirty();
+    } else {
+      G.mode='zombiedead'; G.shake=30; beep(100, 0.5, 'sawtooth', 0.15, 30);
+    }
+    return; 
+  }
+
+  updateParticles(dt);
+}
+function drawZombieFigure(sx, sy, scale, phase) {
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.scale(scale, scale); 
+  
+  // 摇晃的步伐
+  const walk = Math.sin(phase) * 6;
+  
+  // 破败的裤子/腿
+  ctx.strokeStyle = '#2a3b2a'; ctx.lineWidth = 8; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-5, -20); ctx.lineTo(-10+walk, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(5, -20); ctx.lineTo(10-walk, 0); ctx.stroke();
+  
+  // 破烂的衣服/身体
+  ctx.fillStyle = '#4a6a4a';
+  roundRect(-12, -45, 24, 28, 6); ctx.fill();
+  // 身上的血迹
+  ctx.fillStyle = '#8a2020';
+  ctx.beginPath(); ctx.arc(-5, -35, 3, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(4, -25, 4, 0, Math.PI*2); ctx.fill();
+
+  // 伸出的双手（经典丧尸姿势）
+  ctx.strokeStyle = '#6a9a6a'; ctx.lineWidth = 7; 
+  ctx.beginPath(); ctx.moveTo(0, -38); ctx.lineTo(25, -35+Math.sin(phase)*5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -30); ctx.lineTo(22, -25+Math.cos(phase)*5); ctx.stroke();
+  
+  // 发绿的脸
+  ctx.fillStyle = '#6a9a6a';
+  ctx.beginPath(); ctx.arc(0, -55, 12, 0, Math.PI*2); ctx.fill();
+  
+  // 烂掉的嘴巴和黑色的眼眶
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(6, -58, 3, 0, Math.PI*2); ctx.fill(); // 眼窝
+  ctx.beginPath(); ctx.arc(6, -50, 4, 0, Math.PI); ctx.fill();   // 咬人的嘴
+  
+  // 发光的红眼
+  ctx.fillStyle = '#ff0000';
+  ctx.beginPath(); ctx.arc(7, -58, 1.5, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+function renderZombie(){
+  syncTouchButtons();
+  ctx.save(); if(G.shake>0.4)ctx.translate(rand(-G.shake,G.shake),rand(-G.shake,G.shake));
+  
+  const dangerRatio = Math.max(0, 1 - (G.zombieDist / 250));
+  drawSky(); 
+  ctx.fillStyle=`rgba(255,0,0,${dangerRatio * 0.5})`; 
+  ctx.fillRect(0,0,W,H);
+
+  drawHills(); drawBackdrop(); drawGround(); drawCoins();
+  
+  // 画障碍物、飞刀、油桶
+  for(const o of obstacles){
+    if(o.type === 'knife') {
+      // 飞刀渲染
+      ctx.save(); ctx.translate(o.x+o.w/2, o.y+o.h/2); ctx.rotate(G.time*20);
+      ctx.fillStyle='#e0e0e0';
+      ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(10, -4); ctx.lineTo(5, 0); ctx.lineTo(10, 4); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    else if(o.type === 'barrel') {
+      // 油桶渲染
+      ctx.fillStyle = '#ff2020'; roundRect(o.x, o.y, o.w, o.h, 6); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; roundRect(o.x, o.y, o.w, o.h, 6); ctx.stroke();
+      ctx.fillStyle = '#ffd700'; ctx.font = 'bold 24px ' + FONT;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('☢️', o.x + o.w/2, o.y + o.h/2);
+    }
+    else if(o.type==='box')drawBox(o);else if(o.type==='doublebox')drawDoubleBox(o);
+    else if(o.type==='spikes')drawSpikes(o);else if(o.type==='saw')drawSaw(o);
+    else if(o.type==='lowbar')drawLowBar(o);else if(o.type==='skymine')drawSkyMine(o);
+else if(o.type==='drone')drawDrone(o);
+    else if(o.type==='hologram')drawHologram(o);else if(o.type==='cactus')drawCactus(o);
+    else if(o.type==='icicle')drawIcicle(o);else if(o.type==='fireball')drawFireball(o);
+    else if(o.type==='petalwind')drawPetalWind(o);
+  }
+
+  // 画空投补给箱（渲染出来了！）
+  for(const it of items){
+    const bob = Math.sin(G.time * 5) * 5;
+    ctx.save(); ctx.translate(it.x, it.y + bob);
+    ctx.fillStyle = '#ffd93d'; roundRect(-15, -15, 30, 30, 4); ctx.fill();
+    ctx.strokeStyle = '#cc9900'; ctx.lineWidth = 2; roundRect(-15, -15, 30, 30, 4); ctx.stroke();
+    ctx.fillStyle = '#cc9900'; ctx.font = 'bold 16px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🚁', 0, 0);
+    ctx.restore();
+  }
+  
+  drawPlayer(); 
+  
+  // 画子弹弹道
+  for(const b of G.zBullets) {
+    ctx.save();
+    ctx.fillStyle = '#ffff00'; ctx.shadowColor = '#ff9900'; ctx.shadowBlur = 10;
+    ctx.fillRect(b.x, b.y, 30, 4); // 长长的子弹
+    ctx.restore();
+  }
+
+  drawParticles(); 
+  drawWeatherOverlay();
+  ctx.restore();
+  
+  // 左侧丧尸群
+  if(G.mode==='zombie' || G.mode==='zombiewin'){
+    const zx = Math.max(-50, 80 - (G.zombieDist * 0.4)); 
+    if(zx > -100) {
+      ctx.save(); 
+      const zg = ctx.createLinearGradient(0,0,zx,0);
+      zg.addColorStop(0,'rgba(50,150,50,0.9)'); zg.addColorStop(1,'rgba(50,150,50,0)');
+      ctx.fillStyle=zg; ctx.fillRect(0, 0, Math.max(0, zx), H);
+      for(let i=0; i<5; i++){ 
+        const zy = GROUND_Y - (i*60 + 10);
+        const ox = Math.sin(G.time*6 + i)*15;
+        const zScale = 0.8 + (i * 0.1) + Math.sin(G.time*2+i)*0.05; 
+        drawZombieFigure(zx + ox, zy, zScale, G.time*10 + i*2);
+      }
+      ctx.restore();
+    }
+  }
+  
+  // HUD 界面
+  ctx.save();ctx.textBaseline='top';ctx.textAlign='left';ctx.font='bold 40px '+FONT;
+  ctx.fillStyle='#fff';ctx.shadowColor='#000';ctx.shadowBlur=10;
+  ctx.fillText(displayMeters()+'',26,22);
+  
+  // 撤离进度
+  ctx.fillStyle='rgba(0,0,0,0.5)';
+  roundRect(26, 80, W-52, 10, 5); ctx.fill();
+  const distRatio = Math.min(1, G.distance / G.zombieTargetDist);
+  ctx.fillStyle = '#55aa55';
+  roundRect(26, 80, (W-52) * distRatio, 10, 5); ctx.fill();
+
+  ctx.textAlign='left'; ctx.font='bold 16px '+FONT;
+  // 显示武器等级
+  ctx.fillStyle = '#ffd93d';
+  ctx.fillText('🔫 武器 Lv.' + G.zWeaponLv + ' (下一级需击杀:' + (G.zWeaponLv*50 - G.zKills) + ')', 26, 100);
+  
+  ctx.fillStyle = G.bullets < 5 ? '#ff0000' : '#7ee0ff';
+  ctx.fillText('💥 子弹: ' + G.bullets, 26, 125);
+  
+  ctx.fillStyle = G.zombieDist < 100 ? '#ff0000' : '#55aa55';
+  ctx.fillText('🧟 丧尸: ' + Math.max(0,Math.floor(G.zombieDist)) + 'm', 26, 150);
+  ctx.restore();
+
+  if(G.mode==='zombiedead'){
+    const a=clamp(G.deadT/0.4,0,1);
+    ctx.save();ctx.globalAlpha=a;ctx.fillStyle='rgba(20,0,0,0.85)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.font='bold 44px '+FONT;ctx.fillStyle='#55aa55';ctx.fillText('🧟 你被丧尸吞没了！',W/2,240);
+    ctx.restore();
+    if(G.deadT>0.7){
+      drawUIButton({x:90,y:640,w:360,h:56},'再 来 一 局',[110,200,120],true);
+      drawUIButton({x:90,y:708,w:360,h:56},'返 回 大 厅',[140,180,240],true);
+    }
+  }
+  
+  if(G.mode==='zombiewin'){
+    ctx.save();ctx.fillStyle='rgba(0,20,0,0.85)';ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.font='bold 50px '+FONT;ctx.fillStyle='#7ee0ff';ctx.fillText('🚁 撤离成功！',W/2,240);
+    ctx.font='bold 20px '+FONT;ctx.fillStyle='#ffd93d';ctx.fillText('奖励 1000 金币！',W/2,300);
+    ctx.restore();
+    drawUIButton({x:90,y:640,w:360,h:56},'再 来 一 局',[110,200,120],true);
+    drawUIButton({x:90,y:708,w:360,h:56},'返 回 大 厅',[140,180,240],true);
+  }
+}
+// ==================== 互坑乱斗模式 (终极双轨版) ====================
+function startPvp(){
+  initAudio(); G.mode='pvp'; G.time=0; G.deadT=0;
+  G.speed=220; G.baseSpeed=220; G.distance=0; G.coins=0;
+  G.nextSpawn=800; G.nextCoin=200; G.nextItem=999999; G.nextPortal=999999;
+  G.pvpBombs=0; G.pvpTargetDist=2000; G.pvpResult=null;
+  obstacles.length=0; coins.length=0; particles.length=0; resetPlayerState(); initSeed(String(Date.now()) + Math.random());
+  G.milestoneMsg='💣 互坑大乱斗！先跑2000米者胜！'; G.milestoneMsgT=2.5;
+}
+
+function updatePvp(dt){
+  if(G.mode==='pvpdead'){ G.deadT+=dt; return; }
+  if(G.mode!=='pvp') return;
+  if(G.pvpResult) return;
+
+  const ch = getChar();
+
+  // 补全所有倒计时
+  if(P.slideCD>0) P.slideCD -= dt;
+  if(G.invulnT>0) G.invulnT -= dt;
+  if(G.zzyFreezeCD>0) G.zzyFreezeCD -= dt;
+  if(G.zzyFreezeT>0) G.zzyFreezeT -= dt;
+  if(G.zycCD>0) G.zycCD -= dt;
+  if(G.soulCD>0) G.soulCD -= dt;
+  if(G.equipActiveCD>0) G.equipActiveCD -= dt;
+  if(G.zxfCD>0) G.zxfCD -= dt;
+if(G.kang1CD>0) G.kang1CD -= dt;
+if(G.zxfLipT>0) G.zxfLipT -= dt;
+if(G.kangLiveT>0) G.kangLiveT -= dt;
+  if(G.flightCD>0) G.flightCD -= dt;
+  if(G.debuffSlowT>0) G.debuffSlowT -= dt;
+  if(G.debuffDarkT>0) G.debuffDarkT -= dt;
+
+  if(G.dashT>0) { 
+    G.dashT -= dt; 
+    const _t=1-Math.max(0,G.dashT/DASH_DURATION);
+    P.dashOffset=Math.sin(_t*Math.PI*0.5)*DASH_DIST;
+    P.vy=0;P.y+=(GROUND_Y-P.y)*Math.min(1,dt*14);
+    P.onGround=true;P.sliding=false;
+    if(G.dashT<=0){ G.dashT=0; P.dashing=false; G.dashSpeedT=DASH_SPEED_TIME; G.invulnT=Math.max(G.invulnT,DASH_INVULN_TIME); }
+  } else if (P.dashOffset>0 && !P.dashing) {
+    P.dashOffset = Math.max(0, P.dashOffset - 500*dt);
+  }
+
+  if(G.soulActive){ G.soulT-=dt; if(G.soulT<=0) G.soulActive=false; }
+  if(P.flying){ G.flightT-=dt; P.y+=(GROUND_Y-FLY_HEIGHT-P.y)*Math.min(1,dt*5.5); P.vy=0; if(G.flightT<=0) P.flying=false; }
+  if(G.jufeiShell){ const sh=G.jufeiShell; sh.x+=sh.vx*dt; sh.life-=dt; if(sh.life<=0) G.jufeiShell=null; }
+
+  G.time+=dt; 
+  G.speed = Math.min(400, 220 + G.time*1.5);
+  if(G.debuffSlowT>0) { G.speed *= 0.5; } 
+  const dx=G.speed*dt;
+  G.distance+=dx;G.scroll+=dx;G.bg1+=dx*0.05;
+  
+  G.pvpEnemySpeed = Math.min(400, 215 + G.time*1.5);
+  G.pvpEnemyDist += G.pvpEnemySpeed * dt;
+
+  G.pvpEnemyCD -= dt;
+  if(G.pvpEnemyCD <= 0 && !G.pvpResult){
+    G.pvpEnemyCD = rand(3.5, 5.5);
+    // 对手随机扔东西
+    const r = Math.random();
+    G.debuffSlowT = r < 0.5 ? 1.5 : 0;
+    G.debuffDarkT = r >= 0.5 ? 1.5 : 0;
+    G.shake = 15;
+    G.milestoneMsg = '⚡ 对手向你扔了干扰道具！'; G.milestoneMsgT=1.5;
+    beep(200,0.3,'sawtooth',0.08,80);
+  }
+
+  G.nextCoin-=dx; if(G.nextCoin<=0){ spawnCoins(); G.nextCoin=rand(300,500); }
+  const pcx=P.x+P.dashOffset,pcy=P.y-(P.sliding?14:32);
+  for(let i=coins.length-1;i>=0;i--){
+    const c=coins[i]; c.x-=dx; if(c.x<-80){coins.splice(i,1);continue;}
+    if((c.x-pcx)**2+(c.y-pcy)**2<1500){ 
+      coins.splice(i,1); 
+      // 随机道具
+      const r = Math.random();
+      if (r < 0.4) G.pvpItem = 'banana';
+      else if (r < 0.7) G.pvpItem = 'thunder';
+      else G.pvpItem = 'bomb';
+      G.milestoneMsg = '获得: ' + (G.pvpItem==='banana'?'🍌减速':(G.pvpItem==='thunder'?'⚡致盲':'💣击退'));
+      G.milestoneMsgT = 1.5;
+      beep(880, 0.05, 'square', 0.05);
+    }
+  }
+
+  if(!P.flying && !P.dashing) {
+    if(keys.down&&P.onGround&&!P.slideLocked&&P.slideCD<=0){P.sliding=true;P.slideT=0.4;P.slideMaxT=0.4;P.slideLocked=true;P.slideCD=SLIDE_CD;}
+    if(!keys.down)P.slideLocked=false; if(P.sliding){P.slideT-=dt;if(P.slideT<=0)P.sliding=false;}
+    P.vy+=GRAVITY*dt; P.y+=P.vy*dt;
+    if(P.y>=GROUND_Y){P.y=GROUND_Y;P.vy=0;P.onGround=true;P.jumps=0;}else{P.onGround=false;}
+  }
+
+  G.nextSpawn-=dx; if(G.nextSpawn<=0){spawnObstacle();G.nextSpawn=G.speed*(1.5+Math.random());}
+  const pbox=playerBox();
+  for(let i=obstacles.length-1;i>=0;i--){
+    const o=obstacles[i]; o.x-=dx; if(o.x+o.w<-180){obstacles.splice(i,1);continue;}
+if(aabb(pbox,mapObstacleBox(o))){ 
+  // 👇 核心修复：技能无敌全豁免！
+  if(G.invulnT>0 || G.dashT>0 || P.flying || G.zzyFreezeT>0 || G.soulActive){
+    obstacles.splice(i,1); continue;
+  }
+  
+  G.invulnT=0.8; 
+  obstacles.splice(i,1); 
+  G.shake=10; 
+  G.distance = Math.max(0, G.distance - 50); 
+}
+  }
+
+  if(G.distance >= G.pvpTargetDist && !G.pvpResult){
+    G.pvpResult = 'win'; G.milestoneMsg = '🏆 你赢了！';
+    G.stats.pvpWins++;
+  } else if (G.pvpEnemyDist >= G.pvpTargetDist && !G.pvpResult) {
+    G.pvpResult = 'lose'; G.milestoneMsg = '💀 对手先到了！';
+  }
+
+  updateParticles(dt);
+}
+function renderPvp(){
+  ctx.save(); drawSky(); drawHills(); drawBackdrop(); drawGround(); drawCoins();
+  for(const o of obstacles){
+    if(o.type==='box')drawBox(o);else if(o.type==='doublebox')drawDoubleBox(o);
+    else if(o.type==='spikes')drawSpikes(o);else if(o.type==='saw')drawSaw(o);
+    else if(o.type==='lowbar')drawLowBar(o);else if(o.type==='skymine')drawSkyMine(o);
+else if(o.type==='drone')drawDrone(o);
+    else if(o.type==='hologram')drawHologram(o);else if(o.type==='cactus')drawCactus(o);
+    else if(o.type==='icicle')drawIcicle(o);else if(o.type==='fireball')drawFireball(o);
+    else if(o.type==='petalwind')drawPetalWind(o);
+  }
+  drawPlayer(); drawParticles(); ctx.restore();
+
+  // 1. 顶部进度条
+  const barY = 80, barW = W - 80, barX = 40;
+  const myRatio = Math.min(1, G.distance / G.pvpTargetDist);
+  
+  ctx.fillStyle='rgba(8,14,32,0.8)'; roundRect(barX, barY, barW, 12, 6); ctx.fill();
+  ctx.fillStyle='#7ee0ff'; roundRect(barX, barY, barW * myRatio, 6, 3); ctx.fill();
+
+  // 其他人的进度（红点）
+  if (mpPeers) {
+    ctx.fillStyle='#ff5c7a';
+    for(const pid in mpPeers){
+      const peer = mpPeers[pid];
+      if(peer.distance){
+        const pRatio = Math.min(1, peer.distance / G.pvpTargetDist);
+        ctx.beginPath(); ctx.arc(barX + barW * pRatio, barY + 9, 4, 0, Math.PI*2); ctx.fill();
+      }
+    }
+  }
+
+  ctx.fillStyle='#fff';ctx.font='bold 16px '+FONT; 
+  ctx.textAlign='left'; ctx.fillText('你: ' + Math.floor(G.distance/10) + 'm', barX, barY - 10);
+  ctx.textAlign='left';
+
+  // 2. 道具发射按钮（根据道具变色变图标）
+  if(G.pvpItem && !G.pvpResult){
+    let icon = G.pvpItem === 'banana' ? '🍌' : (G.pvpItem === 'thunder' ? '⚡' : '💣');
+    let col = G.pvpItem === 'banana' ? 'rgba(255,210,60,0.85)' : (G.pvpItem === 'thunder' ? 'rgba(160,50,255,0.85)' : 'rgba(255,32,32,0.85)');
+    
+    ctx.fillStyle=col; 
+    roundRect(W/2-90, H-160, 180, 60, 15); ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=3; 
+    roundRect(W/2-90, H-160, 180, 60, 15); ctx.stroke();
+    ctx.fillStyle='#fff'; ctx.font='bold 24px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('发射 ' + icon, W/2, H-130); 
+  } else if (!G.pvpResult) {
+    ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font='bold 16px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('吃金币获得随机道具！', W/2, H-130);
+  }
+  ctx.textAlign='left'; ctx.textBaseline='top';
+
+  // 3. 雷电致盲特效（如果在减速/致盲状态，屏幕留一条缝）
+  if(G.debuffDarkT > 0){
+    G.debuffDarkT -= 0.016;
+    ctx.fillStyle = 'rgba(0,0,0,0.9)';
+    ctx.fillRect(0,0,W,H);
+    ctx.clearRect(W/2-80, H/2-100, 160, 300); // 中间留缝
+    ctx.fillStyle = '#ff2020'; ctx.font = 'bold 24px '+FONT; ctx.textAlign='center';
+    ctx.fillText('⚡ 雷电致盲！', W/2, H/2 - 130);
+    ctx.textAlign='left';
+  }
+
+  // 4. 胜负结算
+  if(G.pvpResult){
+    ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font='bold 60px '+FONT; 
+    ctx.fillStyle = G.pvpResult === 'win' ? '#7ee0ff' : '#ff5c7a';
+    ctx.fillText(G.pvpResult === 'win' ? '🏆 胜利' : '💀 战败', W/2, H/2 - 50);
+    ctx.textAlign='left'; ctx.textBaseline='top';
+
+    drawUIButton({x:90,y:640,w:360,h:56},'再 来 一 局',[255,90,90],true);
+    drawUIButton({x:90,y:708,w:360,h:56},'返 回 大 厅',[140,180,240],true);
+  }
+}
+
 })();
 </script>
 </body>
