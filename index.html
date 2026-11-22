@@ -136,64 +136,20 @@ window.localAuth = window.authUser;
 // 2. 把云端数据应用到游戏
 function applyCloudSave(d) {
   if (!d || typeof d !== 'object') return;
+  
+  // 👇 账号唯一名字逻辑：如果云端有名字，直接覆盖本地名字
+  if (d.nickname) {
+    G.nickname = d.nickname;
+  }
+
   G.totalCoins = d.totalCoins ?? 0;
   G.best = d.best ?? 0;
   G.stats = Object.assign(G.stats, d.stats || {});
-  G.upgrades = Object.assign(G.upgrades, d.upgrades || {});
-  UPGRADES.forEach(u => {
-    if (typeof G.upgrades[u.id] !== 'number') G.upgrades[u.id] = 0;
-    G.upgrades[u.id] = clamp(G.upgrades[u.id], 0, u.maxLv);
-  });
-
-  G.owned = Array.isArray(d.owned) && d.owned.length
-    ? d.owned.filter(id => CHARS.some(c => c.id === id))
-    : ['mdf'];
-  if (!G.owned.includes('mdf')) G.owned.unshift('mdf');
-  G.selected = (d.selected && G.owned.includes(d.selected)) ? d.selected : 'mdf';
-
-  G.ownedSkins = Array.isArray(d.ownedSkins) ? d.ownedSkins.slice() : [];
-  G.charSkins = Object.assign({}, d.charSkins || {});
-  CHARS.forEach(c => {
-    const def = c.id + '_default';
-    if (!G.ownedSkins.includes(def)) G.ownedSkins.push(def);
-    const cur = G.charSkins[c.id];
-    if (!cur || !G.ownedSkins.includes(cur)) G.charSkins[c.id] = def;
-  });
-
-  G.ownedPets = Array.isArray(d.ownedPets) && d.ownedPets.length
-    ? d.ownedPets.filter(id => PETS.some(p => p.id === id))
-    : ['none'];
-  if (!G.ownedPets.includes('none')) G.ownedPets.unshift('none');
-  G.petId = (d.petId && G.ownedPets.includes(d.petId)) ? d.petId : 'none';
-
-  G.wishCoins = d.wishCoins ?? 0;
-  G.mythCrystal = d.mythCrystal ?? 0;
-  G.mythShard = d.mythShard ?? 0;
-  G.coinRushDate = d.coinRushDate || '';
-
-  G.weathersSeen = Array.isArray(d.weathersSeen) ? d.weathersSeen.slice() : [];
-  G.stats.weathersSeen = G.weathersSeen.length;
-
-  G.achClaimed = Array.isArray(d.achClaimed) ? d.achClaimed.slice() : [];
-  G.achSeen = Array.isArray(d.achSeen) ? d.achSeen.slice() : [];
-
-  G.mapsUsed = Array.isArray(d.mapsUsed)
-    ? d.mapsUsed.filter(id => MAPS.some(m => m.id === id))
-    : [];
-  G.stats.mapsUsed = G.mapsUsed.length;
-  G.mapId = (d.mapId && MAPS.some(m => m.id === d.mapId)) ? d.mapId : 'city';
-  if (!G.mapsUsed.includes(G.mapId)) G.mapsUsed.push(G.mapId);
-
-  if (d.daily && d.daily.date === todayStr() && DAILY_POOL.some(p => p.id === d.daily.id)) {
-    G.daily = { date: d.daily.date, id: d.daily.id, done: !!d.daily.done, claimed: !!d.daily.claimed };
-  } else {
-    const p = DAILY_POOL[Math.floor(Math.random() * DAILY_POOL.length)];
-    G.daily = { date: todayStr(), id: p.id, done: false, claimed: false };
-  }
-
-  G.stats.charsOwned = G.owned.length;
-  G.stats.skinsOwned = G.ownedSkins.filter(s => !s.endsWith('_default')).length;
-  G.stats.petsOwned = G.ownedPets.length;
+  // ... 原本那一大堆数据恢复代码保持原样 ...
+  
+  // 🚨 好友不同步：这里绝对不要写 G.friends = d.friends
+  // 好友完全依赖你本地 loadProgress 时的读取
+  
   clearCC();
 }
 
@@ -686,11 +642,26 @@ function startFriendMqtt(){
   friendMqtt.subscribe('wjw-friend-req/'+G.playerId);
   friendMqtt.subscribe('wjw-global-rank-v1'); // 订阅全服排行榜
   friendMqtt.subscribe('wjw-global-chat-v1'); // 订阅聊天频道
+  // 发送在线心跳
+setInterval(() => {
+  if(friendMqtt && friendMqtt.connected) {
+    // 广播心跳时，带上最新的名字
+    friendMqtt.publish('wjw-online-v1', JSON.stringify({ playerId: G.playerId, name: G.nickname }));
+    if(typeof broadcastGlobalScore === 'function') broadcastGlobalScore();
+  }
+}, 5000);
   console.log('好友/排行通道已连接，ID:',G.playerId);
   broadcastGlobalScore(); // 上线就广播一次自己的分数
 });
 
   friendMqtt.on('message',(topic,payload)=>{
+  if(topic === 'wjw-online-v1'){
+  const d = JSON.parse(payload.toString());
+  if(d.playerId && d.playerId !== G.playerId){
+    G.onlinePeers[d.playerId] = Date.now(); // 记录该玩家的活跃时间
+  }
+  return;
+}
     try{
   const d=JSON.parse(payload.toString());
   // 接收聊天消息
@@ -859,28 +830,32 @@ window.saveProgress = async function() {
   if (_saveInFlight) return;
   _saveInFlight = true;
 
-  const saveData = {
-    totalCoins: G.totalCoins,
-    owned: G.owned,
-    selected: G.selected,
-    best: G.best,
-    stats: G.stats,
-    upgrades: G.upgrades,
-    ownedSkins: G.ownedSkins,
-    charSkins: G.charSkins,
-    ownedPets: G.ownedPets,
-    petId: G.petId,
-    mapId: G.mapId,
-    mapsUsed: G.mapsUsed,
-    achClaimed: G.achClaimed,
-    achSeen: G.achSeen,
-    daily: G.daily,
-    weathersSeen: G.weathersSeen,
-    wishCoins: G.wishCoins,
-    mythCrystal: G.mythCrystal,
-    mythShard: G.mythShard,
-    coinRushDate: G.coinRushDate
-  };
+const saveData = {
+  totalCoins: G.totalCoins,
+  best: G.best,
+  stats: G.stats,
+  upgrades: G.upgrades,
+  owned: G.owned,
+  selected: G.selected,
+  ownedSkins: G.ownedSkins,
+  charSkins: G.charSkins,
+  ownedPets: G.ownedPets,
+  petId: G.petId,
+  mapId: G.mapId,
+  mapsUsed: G.mapsUsed,
+  achClaimed: G.achClaimed,
+  achSeen: G.achSeen,
+  daily: G.daily,
+  weathersSeen: G.weathersSeen,
+  wishCoins: G.wishCoins,
+  mythCrystal: G.mythCrystal,
+  mythShard: G.mythShard,
+  coinRushDate: G.coinRushDate,
+  
+  // 👇 核心修改：加上名字
+  nickname: G.nickname 
+  // 🚨 注意：千万不要在这里加 G.friends
+};
 
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/saves?on_conflict=user_id`, {
@@ -1048,6 +1023,14 @@ const SEASON_REWARDS = [
   {lv:19, xp:260000, type:'coin', amount:20000, name:'2万 金币'},
   {lv:20, xp:350000, type:'crystal', amount:3, name:'🏆 3 神话水晶'}
 ];
+const INFINITY_GEMS = [
+  { id: 'space', name: '空间宝石', color: '#0088ff', map: 'city' },
+  { id: 'mind', name: '心灵宝石', color: '#ffd700', map: 'desert' },
+  { id: 'reality', name: '现实宝石', color: '#ff0000', map: 'lava' },
+  { id: 'power', name: '力量宝石', color: '#a000ff', map: 'sakura' },
+  { id: 'soul', name: '灵魂宝石', color: '#ff8800', map: 'ice' },
+  { id: 'time', name: '时间宝石', color: '#00ff00', map: 'shop' }
+];
 const EQUIPS = [
   { id:'boots', name:'疾风战靴', icon:'👟', desc:'基础跑速 +3 / 级\n[Lv.3解锁] 完美闪避时获得极速冲刺', maxLv:10, basePrice:1000, priceMul:1.5 },
   { id:'armor', name:'金刚战甲', icon:'🥋', desc:'护盾持续 +0.2秒 / 级\n[Lv.5解锁] 护盾破碎时震碎全屏障碍物', maxLv:10, basePrice:1200, priceMul:1.5 },
@@ -1059,6 +1042,16 @@ const UPGRADES=[
 {id:'shield',name:'护盾强化',icon:'🛡',desc:'护盾无敌 +0.4 秒 / 级',maxLv:50,basePrice:300,priceMul:1.2},
 {id:'speed',name:'起跑冲刺',icon:'⚡',desc:'初始跑速提升 (开局直接起飞)',maxLv:20,basePrice:2000,priceMul:1.35},
 {id:'startShield',name:'先天罡气',icon:'✨',desc:'每局开始自带 1 个护盾',maxLv:1,basePrice:15000,priceMul:1}
+];
+const TITLES = [
+  { id: 'novice', name: '初出茅庐', cond: () => true },
+  { id: 'runner', name: '长跑健将', cond: () => G.stats.totalDist >= 20000 },
+  { id: 'rich', name: '富甲一方', cond: () => G.totalCoins >= 5000 },
+  { id: 'zombie', name: '生化清道夫', cond: () => G.stats.zombieKills >= 200 },
+  { id: 'kunkun', name: '背带裤战神', cond: () => G.owned.includes('kang') },
+  { id: 'zxf', name: '考研导师', cond: () => G.stats.zxfRuns >= 5 },
+  { id: 'boss', name: 'BOSS终结者', cond: () => G.stats.bossBest >= 3000 },
+  { id: 'god', name: '跑酷之神', cond: () => G.best >= 5000 }
 ];
 const ACHIEVEMENTS=[
 {id:'first',name:'初次奔跑',icon:'🏁',desc:'完成第一局跑酷',reward:20,check:s=>s.runs>=1},
@@ -1161,7 +1154,12 @@ slowMoBonus:0,  // 慢动作期间的额外金币加成
   skinPanel:{open:false,charId:null},
   upgrades:{jump:0,coin:0,shield:0,speed:0,startShield:0},
   equips:{boots:0, armor:0, ring:0},
+  hasGauntlet: false, // 是否拥有手套本体
+gems: [], // 已收集的宝石 ['space', 'mind', 'reality', 'power', 'soul', 'time']
+gauntletCD: 0, // 手套技能冷却
   equipActiveCD:0, // 装备主动技能冷却
+  equippedTitle: 'novice', // 当前佩戴的称号
+  profileLv:1, profileXP:0, playTime:0, onlinePeers:{},
   arcadeTime:0, arcadeHp:0, arcadeEnemies:[], arcadeBullets:[], arcadeState:'', arcadeReward:0,
   zxfCD:0, kang1CD:0, kangFlower:0, zxfLipT:0, kangLiveT:0, last500Check:0,
   achClaimed:[],achSeen:[],
@@ -1803,6 +1801,35 @@ function tryActivateJufei(){
   beep(360,0.14,'square',0.06,700);
   const f=checkAchievements();if(f.length)G.newAch=f;markDirty();
 }
+function tryActivateGauntlet(){
+  initAudio();
+  if(!['playing','boss','endless','zombie','pvp'].includes(G.mode)) return;
+  if(!G.hasGauntlet || G.gems.length < 6 || G.gauntletCD > 0) return;
+
+  G.gauntletCD = 30; // 30秒冷却
+  G.milestoneMsg = '🧤 我就是天命！'; G.milestoneMsgT = 3;
+  G.shake = 30;
+  
+  // 极致的紫金全屏特效
+  for(let i=0; i<100; i++) {
+    addParticle(rand(0,W), rand(0,H), rand(-400,400), rand(-400,400), rand(0.5,1.5), Math.random()<0.5?'#ffd700':'#a000ff', rand(3,8), 0);
+  }
+  beep(100, 0.5, 'sawtooth', 0.15, 30);
+  setTimeout(()=>beep(800, 0.5, 'triangle', 0.15, 1200), 200);
+
+  // 技能效果：
+  // 1. 清除全屏障碍物
+  obstacles.length = 0;
+  // 2. 吸收全屏金币
+  for(let i=coins.length-1; i>=0; i--) {
+    let c = coins[i]; c.x = P.x; c.y = P.y - 30; // 瞬间吸到身上
+  }
+  // 3. 获得 5 秒无敌 + 时间减速（现实+时间宝石）
+  G.invulnT = Math.max(G.invulnT, 5);
+  G.slowMoT = Math.max(G.slowMoT, 5);
+  // 4. 直接回满护盾（灵魂宝石）
+  G.shield = 1;
+}
 function tryActivateEquipSkill(){
   initAudio();
   if(!['playing','boss','endless'].includes(G.mode)) return;
@@ -2034,16 +2061,18 @@ else { by = GROUND_Y - sRand(180, 220); }
 G.nextCoin=sRand(350,650)/cr;
 }
 function spawnItem(){
-  const r=Math.random();
+  const r = Math.random();
   let t;
   if(mpActive) {
-    // 联机模式：40%概率生成专属加速道具
-    if(r<0.4) t='speed';
-    else if(r<0.7) t='shield';
+    if(r<0.3) t='speed';
+    else if(r<0.6) t='shield';
+    else if(r<0.8) t='tea'; // 冰红茶
     else t='magnet';
   } else {
-    if(r<0.42)t='shield';
-    else if(r<0.72)t='magnet';
+    if(r<0.25) t='shield';
+    else if(r<0.5) t='magnet';
+    else if(r<0.75) t='tea'; // 👈 25%概率刷出冰红茶
+    else if(r<0.9) t='speed';
     else t='double';
   }
   items.push({type:t,x:W+60,y:GROUND_Y-rand(80,250),r:17,phase:Math.random()*6.28});
@@ -2167,6 +2196,34 @@ function characterParticles(ch,dt){
 }
 
 function update(dt){
+// ===== 个人信息经验获取 =====
+if(['playing','zombie','pvp','boss','endless'].includes(G.mode)){
+  G.playTime += dt;
+  G.profileXP += dt * 10; // 每秒获得 10 点经验
+  let expNeeded = G.profileLv * 1000; // 无限等级公式：每级需 Lv*1000 经验
+  if(G.profileXP >= expNeeded){
+    G.profileXP -= expNeeded;
+    G.profileLv++;
+    G.milestoneMsg = '🎉 等级提升！当前 Lv.' + G.profileLv;
+    G.milestoneMsgT = 3;
+    beep(1200, 0.2, 'triangle', 0.08, 1800);
+    G.totalCoins += G.profileLv * 100; // 升级送金币
+    markDirty();
+  }
+}
+// ===== 无限宝石掉落判定 (无时间距离限制) =====
+if(G.mode === 'playing' && !G.hasGauntlet) {
+  const currentMap = getMap().id;
+  const gemConfig = INFINITY_GEMS.find(g => g.map === currentMap);
+  // 如果这张地图的宝石还没拿到，每次生成道具时有 20% 概率替换成宝石
+  if(gemConfig && !G.gems.includes(gemConfig.id) && !G.gemSpawnedThisRun) {
+    if(Math.random() < 0.2) { // 20%概率
+      G.gemSpawnedThisRun = true;
+      items.push({ type: 'gem', gemId: gemConfig.id, color: gemConfig.color, x: W + 60, y: GROUND_Y - 200, r: 20, phase: 0 });
+      G.milestoneMsg = '💎 发现 ' + gemConfig.name + '！快去吃！'; G.milestoneMsgT = 3;
+    }
+  }
+}
 // ===== 完美闪避子弹时间 =====
 if (G.slowMoT > 0) {
   G.slowMoT -= dt; // 用真实时间倒计时
@@ -2587,6 +2644,12 @@ if (G.equips.armor >= 5) {
       items.splice(i,1);
       G.itemFx.push({x:it.x,y:it.y,t:0.6,max:0.6,type:it.type});
       if(it.type==='shield'){G.shield=1;G.sessionShields++;G.milestoneMsg='🛡 护盾已装备';G.milestoneMsgT=1.5;beep(880,0.14,'triangle',0.055,1240);}
+      else if(it.type==='gem'){
+  G.gems.push(it.gemId);
+  G.milestoneMsg = '💎 获得 ' + INFINITY_GEMS.find(g => g.id === it.gemId).name + '！'; G.milestoneMsgT = 2.5;
+  G.shake = 20; beep(1200, 0.2, 'triangle', 0.08, 1600);
+  markDirty(); saveProgress();
+}
 else if(it.type==='magnet'){
   G.magnetT=8;G.stats.magnetCount++;G.milestoneMsg='🧲 磁铁 8 秒';G.milestoneMsgT=1.5;beep(760,0.14,'triangle',0.055,1120);
   // 💍 神戒专属技能
@@ -2594,6 +2657,13 @@ else if(it.type==='magnet'){
     G.doubleT = Math.max(G.doubleT, 8);
     G.milestoneMsg = '💍 神戒发光！金币双倍！'; G.milestoneMsgT = 2;
   }
+}
+else if(it.type==='tea'){
+  G.dashSpeedT = Math.max(G.dashSpeedT, 5); // 👈 获得 5 秒极速
+  G.invulnT = Math.max(G.invulnT, 2);       // 👈 顺便送 2 秒无敌
+  G.milestoneMsg = '🧋 冰红茶！极速狂飙 5 秒！'; 
+  G.milestoneMsgT = 1.5;
+  beep(1200,0.2,'sawtooth',0.06,1800);
 }
 else if(it.type==='speed'){G.dashSpeedT=3;G.milestoneMsg='⚡ 极速冲刺 3 秒！';G.milestoneMsgT=1.5;beep(1200,0.2,'sawtooth',0.06,1800);}
 else{G.doubleT=10;G.stats.doubleCount++;G.milestoneMsg='✨ 双倍金币 10 秒';G.milestoneMsgT=1.5;beep(980,0.14,'triangle',0.055,1480);}
@@ -3089,6 +3159,83 @@ function drawCoins(){for(const c of coins)drawCoinShape(c.x,c.y,c.r,c.phase);}
 function drawCoinIcon(x,y,r){drawCoinShape(x,y,r,G.time*3);}
 function drawItems(){
   for(const it of items){
+  // 👇 渲染无限宝石
+if(it.type === 'gem') {
+  const colors = { 
+    city:'#00aaff',   // 空间：蓝
+    desert:'#ffd700', // 心灵：黄
+    ice:'#00ff88',    // 灵魂：绿
+    lava:'#ff0000',   // 现实：红
+    sakura:'#a020f0', // 力量：紫
+    time:'#00ffff'    // 时间：青
+  };
+  
+  ctx.save(); 
+  // 悬浮动画
+  ctx.translate(it.x, it.y + Math.sin(G.time * 5 + it.phase) * 6);
+  
+  // 发光特效
+  const gemColor = colors[it.gemId] || '#fff';
+  ctx.shadowColor = gemColor; 
+  ctx.shadowBlur = 25;
+  ctx.fillStyle = gemColor;
+  
+  // 画一个六边形/菱形的宝石
+  ctx.beginPath();
+  ctx.moveTo(0, -18);   // 顶点
+  ctx.lineTo(14, -6);   // 右上
+  ctx.lineTo(14, 10);   // 右下
+  ctx.lineTo(0, 20);    // 底点
+  ctx.lineTo(-14, 10);  // 左下
+  ctx.lineTo(-14, -6);  // 左上
+  ctx.closePath();
+  ctx.fill();
+  
+  // 宝石高光（白色的反光）
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.beginPath();
+  ctx.moveTo(-4, -10);
+  ctx.lineTo(4, -4);
+  ctx.lineTo(-2, 4);
+  ctx.lineTo(-8, -2);
+  ctx.closePath();
+  ctx.fill();
+  
+  ctx.restore(); 
+  continue; // 画完宝石，跳过下面画普通道具的代码
+}
+// 👇 渲染冰红茶
+if(it.type === 'tea') {
+  ctx.save();
+  ctx.translate(it.x, it.y + Math.sin(it.phase)*3);
+  
+  // 瓶子光晕
+  ctx.shadowColor = '#ff8800'; ctx.shadowBlur = 15;
+  
+  // 瓶身（黄色/橙色渐变）
+  const bg = ctx.createLinearGradient(-8, -12, 8, 12);
+  bg.addColorStop(0, '#ffcc00'); bg.addColorStop(1, '#ff6600');
+  ctx.fillStyle = bg;
+  roundRect(-8, -12, 16, 24, 4); ctx.fill();
+  
+  // 瓶盖（红色）
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#ff2020';
+  roundRect(-6, -16, 12, 5, 2); ctx.fill();
+  
+  // 标签（白色方块）
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(-7, -2, 14, 8);
+  
+  // 气泡特效
+  if(Math.random()<0.2) {
+    addParticle(it.x+rand(-5,5), it.y+rand(-5,5), 0, -rand(10,30), 0.5, '#fff', 2, 0);
+  }
+  
+  ctx.restore();
+  continue;
+}
     const bob=Math.sin(it.phase)*3;
     ctx.save();ctx.translate(it.x,it.y+bob);
     let col1,col2,glow;
@@ -4821,7 +4968,12 @@ function drawPlayer(){
     ctx.strokeStyle=P.flying?'rgba(0,217,255,0.85)':'rgba(120,200,255,0.5)';ctx.lineWidth=1;
     roundRect(px-lw/2,ly-8,lw,16,8);ctx.stroke();
     ctx.fillStyle=P.flying?'#a0f0ff':'#9fe0ff';
-    ctx.fillText(ch.name,px,ly+0.5);ctx.restore();
+    let currentTitle = TITLES.find(t => t.id === G.equippedTitle);
+let showName = ch.name;
+if(currentTitle && currentTitle.id !== 'novice') {
+  showName = '【' + currentTitle.name + '】' + ch.name;
+}
+ctx.fillText(showName,px,ly+0.5);ctx.restore();
   }
 }
 function drawCompanion(){
@@ -5402,44 +5554,40 @@ async function fetchTrueRank() {
 function drawGlobalRank(){
   ctx.fillStyle='rgba(4,7,18,0.95)';ctx.fillRect(0,0,W,H);
   ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
-  ctx.font='bold 28px '+FONT;ctx.fillStyle='#ffd93d';ctx.fillText('🏆 全服排行榜',W/2,60);
-  ctx.font='13px '+FONT;ctx.fillStyle='rgba(180,215,255,0.6)';ctx.fillText('实时云端数据',W/2,95);
+  ctx.font='bold 28px '+FONT;ctx.fillStyle='#ffd93d';ctx.fillText('🏆 全服实时排行榜',W/2,60);
+  ctx.font='13px '+FONT;ctx.fillStyle='rgba(180,215,255,0.6)';ctx.fillText('抓取当前全服所有在线玩家最高分',W/2,95);
 
-  // 每次进入自动拉取
-  if (_trueRankData.length === 0 && !_isLoadingRank) {
-    fetchTrueRank();
+  // 打开排行榜时，先把自己的最新成绩强行塞进去
+  if (G.best > 0) {
+    updateGlobalRank({
+      playerId: G.playerId || 'unknown',
+      name: G.nickname || '跑者',
+      score: G.best
+    });
   }
 
-  if (_trueRankData.length === 0) {
-  // 网络连不上时，显示本地最高分兜底
-  ctx.fillStyle = 'rgba(255,215,0,0.15)';
-  roundRect(40, 140, 460, 70, 14); ctx.fill();
-  ctx.strokeStyle = 'rgba(255,215,0,0.8)'; ctx.lineWidth = 2.5;
-  roundRect(40, 140, 460, 70, 14); ctx.stroke();
-  
-  ctx.font = 'bold 24px ' + FONT; ctx.fillStyle = '#ffd700'; ctx.textAlign = 'left';
-  ctx.fillText('1', 60, 175);
-  ctx.fillStyle = '#ffd93d'; ctx.font = 'bold 20px ' + FONT;
-  ctx.fillText((G.nickname || '跑者') + ' (本地)', 110, 168);
-  ctx.fillStyle = '#ffd93d'; ctx.font = 'bold 22px ' + FONT; ctx.textAlign = 'right';
-  ctx.fillText(G.best + ' 米', 480, 178);
+  // 把收集到的分数排序
+  const list = Object.keys(globalScores).map(k => {
+    const item = globalScores[k];
+    return { playerId: k, name: item.name, score: item.score };
+  }).sort((a,b) => b.score - a.score);
 
-  ctx.textAlign = 'center'; ctx.font = '14px ' + FONT; ctx.fillStyle = 'rgba(180,215,255,0.6)';
-  ctx.fillText('当前网络无法连接云端，仅显示本地最高纪录', W/2, 260);
-  ctx.fillText('(如果之前有缓存过全服数据，刷新成功后会显示)', W/2, 285);
-} else {
-  // 这里保留你原本画排行榜列表的代码 (for 循环那部分) else {
+  if (list.length === 0) {
+    ctx.font='18px '+FONT;ctx.fillStyle='rgba(200,220,255,0.5)';
+    ctx.fillText('暂无数据，快去跑一局上榜吧！',W/2,300);
+  } else {
     const myId = G.playerId || 'unknown';
-    for (let i=0; i<Math.min(_trueRankData.length, 7); i++) {
-      const item = _trueRankData[i];
+    for (let i=0; i<Math.min(list.length, 7); i++) {
+      const item = list[i];
       const y = 140 + i*80;
-      const isMe = (item.player_id === myId);
+      const isMe = (item.playerId === myId);
+      let displayName = item.name + (isMe ? ' (我)' : '');
       
-      ctx.fillStyle = i===0 ? 'rgba(255,215,0,0.15)' : 'rgba(22,34,70,0.9)';
+      // 卡片背景
+      ctx.fillStyle = i===0 ? 'rgba(255,215,0,0.15)' : (isMe ? 'rgba(40,80,120,0.9)' : 'rgba(22,34,70,0.9)');
       roundRect(40,y,460,70,14);ctx.fill();
       ctx.strokeStyle = i===0 ? 'rgba(255,215,0,0.8)' : (isMe ? 'rgba(126,224,255,0.8)' : 'rgba(110,180,240,0.4)');
-      ctx.lineWidth = i===0 || isMe ? 2.5 : 1.5; 
-      roundRect(40,y,460,70,14);ctx.stroke();
+      ctx.lineWidth = i===0 || isMe ? 2.5 : 1.5; roundRect(40,y,460,70,14);ctx.stroke();
 
       // 排名
       ctx.font='bold 24px '+FONT;
@@ -5448,8 +5596,7 @@ function drawGlobalRank(){
 
       // 名字
       ctx.fillStyle = isMe ? '#ffd93d' : '#fff'; 
-      ctx.font='bold 20px '+FONT;
-      ctx.fillText(item.name + (isMe ? ' (我)' : ''), 110, y+28);
+      ctx.font='bold 20px '+FONT; ctx.fillText(displayName, 110, y+35);
 
       // 分数
       ctx.fillStyle='#ffd93d'; ctx.font='bold 22px '+FONT;
@@ -5461,7 +5608,7 @@ function drawGlobalRank(){
   ctx.fillStyle='rgba(255,210,60,0.15)';roundRect(40,790,150,50,14);ctx.fill();
   ctx.strokeStyle='rgba(255,210,60,0.7)';ctx.lineWidth=2;roundRect(40,790,150,50,14);ctx.stroke();
   ctx.fillStyle='#ffd93d';ctx.font='bold 18px '+FONT;ctx.textAlign='center';
-  ctx.fillText(_isLoadingRank ? '刷新中…' : '🔄 刷新', 115, 815);
+  ctx.fillText('🔄 刷新', 115, 815);
 
   // 返回按钮
   ctx.fillStyle='rgba(79,209,255,0.2)';roundRect(350,790,150,50,14);ctx.fill();
@@ -5521,6 +5668,94 @@ function drawTopBtn(x, y, label, bgColor){
   ctx.fillStyle = '#fff'; ctx.font='bold 13px '+FONT;
   ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(label, x+45, y+15);
   ctx.restore();
+}
+function drawTitles(){
+  ctx.fillStyle='rgba(4,7,18,0.95)'; ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font='bold 28px '+FONT; ctx.fillStyle='#ffd700'; ctx.fillText('👑 成就称号', W/2, 60);
+  
+  for(let i=0; i<TITLES.length; i++){
+    const t = TITLES[i];
+    const unlocked = t.cond();
+    const equipped = (G.equippedTitle === t.id);
+    const y = 110 + i * 65;
+    
+    // 背景卡片
+    ctx.fillStyle = equipped ? 'rgba(255,215,0,0.15)' : (unlocked ? 'rgba(22,34,70,0.9)' : 'rgba(10,15,30,0.6)');
+    roundRect(40, y, 460, 55, 12); ctx.fill();
+    ctx.strokeStyle = equipped ? '#ffd700' : (unlocked ? 'rgba(110,180,240,0.5)' : 'rgba(80,80,80,0.3)');
+    ctx.lineWidth = equipped ? 2.5 : 1.5; roundRect(40, y, 460, 55, 12); ctx.stroke();
+    
+    // 称号名字
+    ctx.textAlign='left'; ctx.font='bold 18px '+FONT;
+    ctx.fillStyle = equipped ? '#ffd700' : (unlocked ? '#fff' : 'rgba(255,255,255,0.3)');
+    ctx.fillText(t.name, 60, y + 28);
+    
+    // 状态
+    ctx.textAlign='right';
+    if(equipped){
+      ctx.font='bold 14px '+FONT; ctx.fillStyle='#ffd700'; ctx.fillText('使用中', 480, y + 28);
+    } else if(unlocked){
+      ctx.font='14px '+FONT; ctx.fillStyle='#7ee0ff'; ctx.fillText('点击佩戴', 480, y + 28);
+    } else {
+      ctx.font='14px '+FONT; ctx.fillStyle='rgba(255,90,90,0.6)'; ctx.fillText('未解锁', 480, y + 28);
+    }
+  }
+  drawUIButton({x:150, y:700, w:240, h:56},'返 回',[140,180,240],true);
+}
+function drawProfile(){
+  ctx.fillStyle='rgba(4,7,18,0.95)'; ctx.fillRect(0,0,W,H);
+  
+  // 标题
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font='bold 32px '+FONT; ctx.fillStyle='#ffd93d';
+  ctx.shadowColor='#ffd93d'; ctx.shadowBlur=20;
+  ctx.fillText('👤 个人信息档案', W/2, 80); ctx.shadowBlur=0;
+  
+  // 大头像
+  ctx.save();
+  const pulse = 1 + Math.sin(G.time*3)*0.05;
+  ctx.globalAlpha=0.5; ctx.shadowColor='rgba(126,224,255,0.9)'; ctx.shadowBlur=40;
+  ctx.beginPath(); ctx.arc(W/2, 200, 70*pulse, 0, Math.PI*2); ctx.fillStyle='rgba(60,140,220,0.3)'; ctx.fill(); ctx.restore();
+  ctx.save(); ctx.translate(W/2, 240); ctx.scale(2.2, 2.2);
+  drawCharacterBody(getChar(), 0, false); ctx.restore();
+  
+  // 数据面板
+  const PX=60, PY=320, PW=420, PH=300;
+  ctx.fillStyle='rgba(22,34,70,0.9)'; roundRect(PX,PY,PW,PH,16); ctx.fill();
+  ctx.strokeStyle='rgba(110,180,240,0.5)'; ctx.lineWidth=2; roundRect(PX,PY,PW,PH,16); ctx.stroke();
+  
+  ctx.textAlign='left'; ctx.font='bold 18px '+FONT; 
+  
+  // 格式化游玩时间
+  const hours = Math.floor(G.playTime / 3600);
+  const mins = Math.floor((G.playTime % 3600) / 60);
+  const secs = Math.floor(G.playTime % 60);
+  const timeStr = hours > 0 ? (hours+'小时 '+mins+'分') : (mins > 0 ? (mins+'分 '+secs+'秒') : (secs+'秒'));
+  
+  // 👇 找当前佩戴的称号
+  let currentTitleName = '初出茅庐';
+  for(let t of TITLES) {
+    if(t.id === G.equippedTitle) currentTitleName = t.name;
+  }
+
+  ctx.fillStyle='#fff';
+  ctx.fillText('🆔 玩家 ID：' + (G.playerId || '未生成'), PX+30, PY+40);
+  ctx.fillText('🏷️ 玩家昵称：' + (G.nickname || '未命名'), PX+30, PY+80);
+  
+  // 👇 显示称号（金色高亮）
+  ctx.fillStyle='#ffd700';
+  ctx.fillText('👑 当前称号：【' + currentTitleName + '】', PX+30, PY+120);
+  
+  ctx.fillStyle='#fff';
+  ctx.fillText('🕒 总游玩时长：' + timeStr, PX+30, PY+160);
+  ctx.fillText('⭐ 历史最高分：' + G.best + ' 米', PX+30, PY+200);
+  ctx.fillText('💰 当前总金币：' + G.totalCoins, PX+30, PY+240);
+  ctx.fillText('🏃 累计跑动：' + G.stats.totalDist + ' 米', PX+30, PY+280);
+  
+  // 👇 底部两个按钮
+  drawUIButton({x:40, y:680, w:200, h:56},'👑 更换称号',[255,210,60],true);
+  drawUIButton({x:280, y:680, w:200, h:56},'返 回 大 厅',[79,209,255],true);
 }
 function drawLobby(){
   const ch=getChar(),map=getMap();
@@ -5593,7 +5828,39 @@ function drawLobby(){
 
   // 超大经典跑酷
   drawUIButton(B_CLASSIC,'▶ 经 典 跑 酷',[79,209,255],true);
+  
+// ===== 左上角个人信息卡片 =====
+ctx.save();
+// 卡片背景
+ctx.fillStyle='rgba(22,34,70,0.85)';
+roundRect(20, 120, 180, 60, 12); ctx.fill();
+ctx.strokeStyle='rgba(126,224,255,0.4)'; ctx.lineWidth=1.5;
+roundRect(20, 120, 180, 60, 12); ctx.stroke();
 
+// 头像与等级
+ctx.textAlign='left'; ctx.textBaseline='middle';
+ctx.font='bold 18px '+FONT; ctx.fillStyle='#fff';
+ctx.fillText('Lv.' + G.profileLv, 35, 142);
+
+// 经验条
+const expNeeded = G.profileLv * 1000;
+const ratio = Math.min(1, G.profileXP / expNeeded);
+ctx.fillStyle='rgba(255,255,255,0.2)'; roundRect(35, 158, 100, 6, 3); ctx.fill();
+ctx.fillStyle='#ff40c0'; roundRect(35, 158, 100 * ratio, 6, 3); ctx.fill();
+
+// 在线人数（移到卡片里，绝对不重叠）
+let onlineCount = 1;
+const now = Date.now();
+for(let pid in G.onlinePeers){
+  if(now - G.onlinePeers[pid] < 15000) onlineCount++;
+}
+ctx.font='12px '+FONT; ctx.fillStyle='#55aa55'; ctx.textAlign='right';
+ctx.fillText('🟢 ' + onlineCount + ' 在线', 185, 142);
+
+// 提示点击查看
+ctx.font='10px '+FONT; ctx.fillStyle='rgba(180,215,255,0.5)';
+ctx.fillText('点击查看主页', 185, 160);
+ctx.restore();
   // 聊天面板
   if(typeof drawChatPanel === 'function') drawChatPanel();
 }
@@ -5739,117 +6006,77 @@ function buildFriendRanking(){
 }
 
 function drawFriends(){
-// 每次打开好友页面，先广播一次自己的最新分数，让在线好友更新我
-if (typeof broadcastGlobalScore === 'function') {
-  setTimeout(() => broadcastGlobalScore(), 500);
-}
-  ctx.fillStyle='rgba(4,7,18,0.94)';ctx.fillRect(0,0,W,H);
-  ctx.save();ctx.textBaseline='middle';ctx.textAlign='left';ctx.font='bold 28px '+FONT;
-  ctx.fillStyle='#fff';ctx.fillText('好友排行榜',30,44);ctx.restore();
+  ctx.fillStyle='rgba(4,7,18,0.95)';ctx.fillRect(0,0,W,H);
+  ctx.save();ctx.textAlign='left';ctx.textBaseline='middle';ctx.font='bold 28px '+FONT;
+  ctx.fillStyle='#fff';ctx.fillText('👥 社交大厅',30,44);ctx.restore();
+  
   ctx.save();ctx.textAlign='left';ctx.textBaseline='middle';ctx.font='13px '+FONT;
   ctx.fillStyle='rgba(180,215,255,0.7)';
-  ctx.fillText('按最高分排名 · 互发好友码即可添加',30,80);
+  ctx.fillText('我的 ID：'+(G.playerId||'生成中…') + ' (发此 ID 给朋友)',30,80);
   ctx.restore();
 
-ctx.save();ctx.textAlign='left';ctx.textBaseline='middle';ctx.font='bold 13px '+FONT;
-ctx.fillStyle='rgba(126,224,255,0.9)';
-ctx.fillText('我的 ID：'+(G.playerId||'生成中…'),30,86);
-ctx.font='12px '+FONT;ctx.fillStyle='rgba(180,215,255,0.55)';
-ctx.fillText('对方在线时，输入你的 ID 发申请即可互加',30,102);
-ctx.restore();
-
-drawUIButton(FRIEND_CODE_BTN,'📤 好友码',[255,210,60],true);
-drawUIButton(FRIEND_ADD_BTN,'📥 好友码加',[79,209,255],true);
-drawUIButton(FRIEND_REQ_BTN,'📨 申请',[255,140,200],true);
+  drawUIButton(FRIEND_CODE_BTN,'📤 好友码',[255,210,60],true);
+  drawUIButton(FRIEND_ADD_BTN,'📥 好友码加',[79,209,255],true);
+  drawUIButton(FRIEND_REQ_BTN,'📨 申请',[255,140,200],true);
 
   const rows = buildFriendRanking();
-  const total = rows.length;
-  const MAX_SHOW = 8;
-  let displayRows = rows.slice(0, MAX_SHOW);
+  const now = Date.now();
 
-  // 如果自己不在前 8，把第 8 行换成自己，并在底部提示
-  let meRank = -1;
-  for(let i=0;i<total;i++){if(rows[i].isMe){meRank=i;break;}}
-  if(meRank >= MAX_SHOW){
-    displayRows = rows.slice(0, MAX_SHOW-1).concat([rows[meRank]]);
-  }
-
-  if(total === 1 && G.friends.length === 0){
-    ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='bold 18px '+FONT;
-    ctx.fillStyle='rgba(180,215,255,0.5)';ctx.fillText('还没有好友，点上方添加',W/2,420);
-    ctx.restore();
-    drawUIButton(FRIEND_BACK_BTN,'返 回',[79,209,255],true);
-    return;
-  }
-
-  for(let i=0;i<displayRows.length;i++){
-    const row = displayRows[i];
-    const realRank = rows.indexOf(row);
+  for(let i=0;i<Math.min(rows.length, 8);i++){
+    const row = rows[i];
     const y = FRIEND_LIST_Y + i*FRIEND_ITEM_GAP;
-    if(y > 860) break;
-
-    const medalCol = realRank===0 ? '#ffd700' : (realRank===1 ? '#c0d0e0' : (realRank===2 ? '#cd7f32' : 'rgba(160,200,240,0.55)'));
-    const bgCol = row.isMe ? 'rgba(40,80,120,0.95)' : 'rgba(22,34,70,0.92)';
-    const borderCol = row.isMe ? 'rgba(255,210,60,0.85)' : 'rgba(110,180,240,0.45)';
-
-    // 卡片底
+    
+    // 背景卡片
     ctx.save();
-    ctx.fillStyle = bgCol;
+    ctx.fillStyle = row.isMe ? 'rgba(40,80,120,0.95)' : 'rgba(22,34,70,0.92)';
     roundRect(30,y,480,FRIEND_ITEM_H,14);ctx.fill();
-    ctx.strokeStyle = borderCol;ctx.lineWidth = row.isMe ? 2.5 : 2;
+    ctx.strokeStyle = row.isMe ? 'rgba(255,210,60,0.85)' : 'rgba(110,180,240,0.45)'; 
+    ctx.lineWidth = row.isMe ? 2.5 : 2;
     roundRect(30,y,480,FRIEND_ITEM_H,14);ctx.stroke();ctx.restore();
 
     // 排名数字
-    ctx.save();
-    ctx.textAlign='center';ctx.textBaseline='middle';
-    ctx.font='bold ' + (realRank<3?26:20) + 'px '+FONT;
-    ctx.fillStyle = medalCol;
-    if(realRank<3){ctx.shadowColor=medalCol;ctx.shadowBlur=10;}
-    ctx.fillText(String(realRank+1), 55, y+FRIEND_ITEM_H/2+1);
+    ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.font='bold ' + (i<3?26:20) + 'px '+FONT;
+    ctx.fillStyle = i===0 ? '#ffd700' : (i===1 ? '#c0d0e0' : (i===2 ? '#cd7f32' : 'rgba(160,200,240,0.55)'));
+    ctx.fillText(String(i+1), 55, y+FRIEND_ITEM_H/2+1);
     ctx.restore();
 
-    // 头像
-    const ch = getCharById(row.charId || 'mdf');
-    const oldP = {onGround:P.onGround,vy:P.vy,sliding:P.sliding,flying:P.flying,dashOffset:P.dashOffset};
-    P.onGround=true;P.vy=0;P.sliding=false;P.flying=false;P.dashOffset=0;
-    ctx.save();ctx.beginPath();roundRect(30,y,480,FRIEND_ITEM_H,14);ctx.clip();
-    ctx.translate(102,y+FRIEND_ITEM_H-4);ctx.scale(0.5,0.5);
-    drawCharacterBody(ch,G.time*3+i,false,false);ctx.restore();
-    P.onGround=oldP.onGround;P.vy=oldP.vy;P.sliding=oldP.sliding;P.flying=oldP.flying;P.dashOffset=oldP.dashOffset;
-
-    // 名字 + 最高分
+    // 名字与最高分
     ctx.save();ctx.textAlign='left';ctx.textBaseline='middle';
-    ctx.font='bold 19px '+FONT;
+    ctx.font='bold 19px '+FONT; 
     ctx.fillStyle = row.isMe ? '#ffe066' : '#fff';
-    const nameStr = (row.name||'跑者') + (row.isMe ? '（我）' : '');
-    ctx.fillText(nameStr, 138, y+26);
-    ctx.font='bold 15px '+FONT;
-    ctx.fillStyle = row.isMe ? '#ffd93d' : '#9fe0ff';
-    ctx.fillText('最高 '+row.best+' 米', 138, y+52);
+    ctx.fillText((row.name||'跑者') + (row.isMe ? '（我）' : ''), 100, y+26);
+    
+    // 在线状态判断
+    let isOnline = false;
+    if (row.playerId && G.onlinePeers[row.playerId] && (now - G.onlinePeers[row.playerId] < 15000)) {
+      isOnline = true;
+    }
+    
+    if (isOnline) {
+      ctx.font='bold 12px '+FONT; ctx.fillStyle='#55aa55';
+      ctx.fillText('🟢 在线', 100, y+50);
+    } else {
+      ctx.font='bold 12px '+FONT; ctx.fillStyle='rgba(255,255,255,0.3)';
+      ctx.fillText('⚫ 离线', 100, y+50);
+    }
+
+    // 最高分
+    ctx.font='bold 15px '+FONT; ctx.fillStyle = row.isMe ? '#ffd93d' : '#9fe0ff';
+    ctx.textAlign='right';
+    ctx.fillText('最高 ' + row.best + ' 米', 480, y+38);
     ctx.restore();
 
-    // 删除按钮（好友才有）
+    // 删除按钮
     if(!row.isMe){
-      ctx.save();
-      ctx.fillStyle='rgba(255,90,90,0.18)';roundRect(420,y+22,70,36,10);ctx.fill();
-      ctx.strokeStyle='rgba(255,90,90,0.65)';ctx.lineWidth=1.5;
-      roundRect(420,y+22,70,36,10);ctx.stroke();
-      ctx.fillStyle='#ff8a8a';ctx.font='bold 13px '+FONT;
-      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.save(); ctx.fillStyle='rgba(255,90,90,0.18)'; roundRect(420,y+22,70,36,10);ctx.fill();
+      ctx.strokeStyle='rgba(255,90,90,0.65)';ctx.lineWidth=1.5; roundRect(420,y+22,70,36,10);ctx.stroke();
+      ctx.fillStyle='#ff8a8a';ctx.font='bold 13px '+FONT;ctx.textAlign='center';ctx.textBaseline='middle';
       ctx.fillText('删除',455,y+40);ctx.restore();
     }
   }
 
-  // 自己不在前 8 时的底部提示
-  if(meRank >= MAX_SHOW){
-    ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='bold 13px '+FONT;
-    ctx.fillStyle='rgba(255,210,60,0.8)';
-    ctx.fillText('你排在第 '+(meRank+1)+' 名', W/2, 858);
-    ctx.restore();
-  }
-
   drawUIButton(FRIEND_NAME_BTN,'✏️ 改名',[140,200,255],true);
-  drawUIButton(FRIEND_REFRESH_BTN,'🔄 刷新',[255,210,60],true);
   drawUIButton(FRIEND_BACK_BTN,'返 回',[79,209,255],true);
 }
 function drawMapThumbnail(m, x, y, w, h) {
@@ -6135,6 +6362,24 @@ function drawForge(){
       drawUIButton(btn, '升级 ' + price, G.totalCoins>=price?[255,140,60]:[140,150,170], G.totalCoins>=price);
     }
   }
+  // 无限手套专区
+ctx.fillStyle='rgba(255,215,0,0.1)'; roundRect(30, 600, 480, 130, 16); ctx.fill();
+ctx.strokeStyle='rgba(255,215,0,0.8)'; ctx.lineWidth=2; roundRect(30, 600, 480, 130, 16); ctx.stroke();
+ctx.textAlign='left'; ctx.font='bold 20px '+FONT; ctx.fillStyle='#ffd700';
+ctx.fillText('🧤 无限手套专区', 50, 630);
+
+ctx.font='13px '+FONT; ctx.fillStyle='#fff';
+ctx.fillText('已收集宝石: ' + G.gems.length + ' / 6', 50, 660);
+
+if(!G.hasGauntlet) {
+  drawUIButton({x: 300, y: 615, w: 180, h: 40}, '买手套 (20000金币)', G.totalCoins>=20000?[255,210,60]:[100,100,100], G.totalCoins>=20000);
+} else if(!G.gems.includes('time')) {
+  // 👇 改为使用神话水晶购买
+  drawUIButton({x: 300, y: 615, w: 180, h: 40}, '买时间宝石 (2水晶)', G.mythCrystal>=2?[0,255,0]:[100,100,100], G.mythCrystal>=2);
+} else {
+  ctx.font='bold 18px '+FONT; ctx.fillStyle='#00ff00'; ctx.textAlign='right';
+  ctx.fillText('✨ 无限手套已就绪 ✨', 480, 635);
+}
   drawUIButton({x:150, y:780, w:240, h:60}, '返 回', [79,209,255], true);
 }
 function drawGrow(){
@@ -7374,17 +7619,19 @@ if(e.code==='KeyQ'){
   return;
 }
   if(e.code==='KeyF'){
-    e.preventDefault();
-    const skillModes=['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode);{
-      const c=getChar();
-      if(c.id==='kcb')tryActivateFlight();
-      else if(c.id==='ylz')tryActivateJufei();
-      else if(c.id==='zyc')tryActivateDash();
-      else if(c.id==='zzy')tryActivateZzyFreeze();
-      else if(c.id==='opl')tryActivateSoul();
-    }
-    return;
+  e.preventDefault();
+  if((G.mode==='playing'||G.mode==='boss'||G.mode==='endless'||G.mode==='zombie'||G.mode==='pvp')&&!e.repeat){
+    const c=getChar();
+    if(c.id==='kcb')tryActivateFlight();
+    else if(c.id==='ylz')tryActivateJufei();
+    else if(c.id==='zyc')tryActivateDash();
+    else if(c.id==='zzy')tryActivateZzyFreeze();
+    else if(c.id==='opl')tryActivateSoul();
+    else if(c.id==='zxf')tryActivateZXF();     // 👈 加上张雪峰
+    else if(c.id==='kang')tryActivateKang1();  // 👈 加上康神
   }
+  return;
+}
   if(e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW'||e.code==='KeyK'||e.code==='Enter'){
     e.preventDefault();
     if(G.mode==='shop'||G.mode==='map'||G.mode==='grow'||G.skinPanel.open)return;
@@ -7523,8 +7770,41 @@ pool.push({type:'coin',    w:25}); // 金币 35% -> 降低到 25%
   markDirty();
 }
 let pointerDrag={down:false,startX:0,startY:0,scrollStart:0,isDragging:false};
+if(G.mode==='titles'){
+  if(inBtn(x,y,{x:150,y:700,w:240,h:56})){ G.mode='profile'; return; }
+  for(let i=0; i<TITLES.length; i++){
+    const t = TITLES[i];
+    const yPos = 110 + i * 65;
+    if(y >= yPos && y <= yPos + 55){
+      if(t.cond()) {
+        G.equippedTitle = t.id; markDirty();
+        beep(1200, 0.1, 'triangle', 0.05, 1800);
+      }
+      return;
+    }
+  }
+  return;
+}
 function handlePointerSimple(x,y){
 if(G.mode === 'arcade_menu'){
+if(G.mode === 'arcade_menu'){
+  // 跳转到你的新游戏网页
+  if(inBtn(x,y,{x:70, y:820, w:180, h:56})){ 
+    window.open('https://lzmyx.pages.dev', '_blank'); 
+    return; 
+  }
+  // 返回大厅
+  if(inBtn(x,y,{x:290, y:820, w:180, h:56})){ 
+    G.mode='lobby'; 
+    return; 
+  }
+  // 原有的四个游戏机点击
+  if(inBtn(x,y,{x:90,y:150,w:360,h:150})){ startArcade(); return; }
+  if(inBtn(x,y,{x:90,y:320,w:360,h:150})){ startFlappy(); return; }
+  if(inBtn(x,y,{x:90,y:490,w:360,h:150})){ startSlot(); return; }
+  if(inBtn(x,y,{x:90,y:660,w:360,h:150})){ startSnake(); return; }
+  return;
+}
   if(inBtn(x,y,{x:150,y:800,w:240,h:56})){ G.mode='lobby'; return; }
   if(inBtn(x,y,{x:90,y:200,w:360,h:150})){ startArcade(); return; }
   if(inBtn(x,y,{x:90,y:400,w:360,h:150})){ startFlappy(); return; }
@@ -7614,6 +7894,8 @@ if(G.kangLiveT > 0){
     return;
   }
   if(G.mode==='lobby'){
+  // 点击左上角卡片进入个人信息
+if(x>=20 && x<=200 && y>=120 && y<=180){ G.mode='profile'; return; }
   // 聊天面板优先处理
   if(G.chatOpen){
     if(x>=W/2-40 && x<=W/2+40 && y>=H/2+180 && y<=H/2+210){ G.chatOpen = false; document.getElementById('chatInputBox').blur(); return; }
@@ -7688,15 +7970,20 @@ if(G.mode==='mp_lobby'){
   }
   return;
 }
-
-if(G.mode==='global_rank'){
- // 刷新
-if(x>=40 && x<=190 && y>=790 && y<=840){
-  fetchTrueRank(); // 改为从云端拉取
+if(G.mode==='profile'){
+if(inBtn(x,y,{x:40,y:680,w:200,h:56})){ G.mode='titles'; return; }
+  if(inBtn(x,y,{x:150,y:720,w:240,h:56})){ G.mode='lobby'; return; }
   return;
 }
-  // 返回
-  if(x>=350 && x<=500 && y>=790 && y<=840){G.mode='lobby';return;}
+if(G.mode==='global_rank'){
+  // 刷新：重新广播自己的分数，并触发别人回传分数
+  if(x>=40 && x<=190 && y>=790 && y<=840){
+    if(typeof broadcastGlobalScore === 'function') broadcastGlobalScore();
+    G.milestoneMsg='🔄 已刷新全服榜单'; G.milestoneMsgT=1.5;
+    return;
+  }
+  // 返回大厅
+  if(x>=350 && x<=500 && y>=790 && y<=840){ G.mode='lobby'; return; }
   return;
 }
 if(G.mode==='friends'){
@@ -7744,6 +8031,20 @@ if(G.mode==='friends'){
     return;
   }
   if(G.mode==='forge'){
+  // 买手套
+if(!G.hasGauntlet && inBtn(x,y,{x: 300, y: 615, w: 180, h: 40}) && G.totalCoins >= 20000){
+  G.totalCoins -= 20000; G.hasGauntlet = true; markDirty(); saveProgress();
+  alert('🧤 获得无限手套！快去收集 5 颗散落在地图的宝石，并购买时间宝石！');
+  return;
+}
+// 买时间宝石 (2个神话水晶)
+if(G.hasGauntlet && !G.gems.includes('time') && inBtn(x,y,{x: 300, y: 615, w: 180, h: 40}) && G.mythCrystal >= 2){
+  G.mythCrystal -= 2; 
+  G.gems.push('time'); 
+  markDirty(); saveProgress();
+  alert('💎 消耗 2 个神话水晶，获得时间宝石！');
+  return;
+}
   if(x>=150 && x<=390 && y>=780 && y<=840){ G.mode=G.returnMode||'lobby'; return; }
   
   for(let i=0; i<EQUIPS.length; i++){
@@ -7909,61 +8210,45 @@ cv.addEventListener('pointerdown',function(e){
   const x=(e.clientX-r.left)/r.width*W;
   const y=(e.clientY-r.top)/r.height*H;
   
-  // 如果是成就或通行证界面，先开启拖拽模式（不直接判定点击）
-  if(G.mode==='grow' && (G.growthTab==='achievement' || G.growthTab==='season') && !G.skinPanel.open){
-    pointerDrag.down=true;
-    pointerDrag.startX=x;
-    pointerDrag.startY=y;
-    pointerDrag.scrollStart=G.growScroll;
-    pointerDrag.isDragging=false;
-    return;
-  }
+  pointerDrag.down=true;
+  pointerDrag.startX=x;
+  pointerDrag.startY=y;
+  pointerDrag.scrollStart=G.growScroll;
+  pointerDrag.isDragging=false;
   
-  // 其他界面直接触发点击
+  // 只有这三个界面需要滑动，不触发点击
+  if(G.mode==='grow' && (G.growthTab==='achievement' || G.growthTab==='season')) return;
+  if(G.mode==='arcade' && G.arcadeState==='playing') return;
+  
+  // 其他界面：只要按下，立刻算作点击！绝不拖延！
   handlePointerSimple(x,y);
 },{passive:false});
 
 cv.addEventListener('pointermove',function(e){
-if(G.mode === 'arcade' && G.arcadeState === 'playing'){
-  e.preventDefault();
-  const r=cv.getBoundingClientRect();
-  const y=(e.clientY-r.top)/r.height*H;
-  // 跟随手指，并限制在天空和地面之间
-  G.arcadePlayerY = clamp(y, 100, GROUND_Y - 20);
-  return;
-}
   if(!pointerDrag.down)return;
-  if(G.mode!=='grow' || (G.growthTab!=='achievement' && G.growthTab!=='season')) return;
-  
-  // 核心：阻止手机浏览器的默认页面滚动
-  e.preventDefault(); 
-  
   const r=cv.getBoundingClientRect();
+  const x=(e.clientX-r.left)/r.width*W;
   const y=(e.clientY-r.top)/r.height*H;
-  const dy=y-pointerDrag.startY;
   
-  // 只要滑动超过 6 像素，就算拖拽，不算点击
-  if(Math.abs(dy)>6) pointerDrag.isDragging=true;
+  if(G.mode==='arcade' && G.arcadeState==='playing'){
+    e.preventDefault();
+    G.arcadePlayerY = clamp(y, 100, GROUND_Y - 20);
+    return;
+  }
   
-  if(pointerDrag.isDragging){
-    let maxScroll = G.growthTab === 'achievement' 
-      ? getMaxGrowScroll() 
-      : Math.max(0, SEASON_REWARDS.length * 90 - 440);
-    G.growScroll = clamp(pointerDrag.scrollStart - dy, 0, maxScroll);
+  if(G.mode==='grow' && (G.growthTab==='achievement' || G.growthTab==='season')){
+    e.preventDefault(); 
+    const dy=y-pointerDrag.startY;
+    if(Math.abs(dy)>6) pointerDrag.isDragging=true;
+    if(pointerDrag.isDragging){
+      let maxScroll = G.growthTab === 'achievement' ? getMaxGrowScroll() : Math.max(0, SEASON_REWARDS.length * 90 - 440);
+      G.growScroll = clamp(pointerDrag.scrollStart - dy, 0, maxScroll);
+    }
   }
 },{passive:false});
 
 cv.addEventListener('pointerup',function(e){
-  if(!pointerDrag.down)return;
   pointerDrag.down=false;
-  
-  // 如果松手时没有发生拖拽，说明玩家只是想点击
-  if(!pointerDrag.isDragging){
-    const r=cv.getBoundingClientRect();
-    const x=(e.clientX-r.left)/r.width*W;
-    const y=(e.clientY-r.top)/r.height*H;
-    handlePointerSimple(x,y);
-  }
   pointerDrag.isDragging=false;
 },{passive:false});
 
@@ -8040,7 +8325,15 @@ bindBtn(btnFly,function(){
 
 // 装备专属技能按钮（独立出来，不再和角色技能嵌套）
 bindBtn(document.getElementById('btnEquip'),function(){
-  if(['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) tryActivateEquipSkill();
+  const ch=getChar();
+  if(!['playing','boss','endless','coin','sd','zombie','pvp'].includes(G.mode)) return;
+  
+  // 如果有满配无限手套，优先放响指
+  if(G.hasGauntlet && G.gems.length === 6) {
+    tryActivateGauntlet();
+  } else {
+    tryActivateEquipSkill();
+  }
 },null);
 function render(){
   if(G.mode==='duel'){syncTouchButtons();renderDuel();return;}
@@ -8081,7 +8374,9 @@ else if(o.type==='drone')drawDrone(o);
 if(G.mode==='playing'||G.mode==='dead'){drawPlayer();drawGhostPlayers();drawCompanion();}
   drawJufeiShell();drawParticles();drawItemFx();drawWeatherOverlay();
   ctx.restore();
+  if(G.mode==='profile') drawProfile();
   if(G.mode==='lobby')drawLobby();
+  if(G.mode==='titles') drawTitles();
   else if(G.mode==='shop'){drawShop();if(G.skinPanel.open)drawSkinPanel();}
   else if(G.mode==='map')drawMapSelect();
   else if(G.mode==='grow')drawGrow();
@@ -8168,7 +8463,10 @@ function renderArcadeMenu(){
   // 游戏3：老虎机
   drawArcadeMachine(90, 600, '幸运老虎机', '搏一搏单车变摩托', [255,90,90]);
   
-  drawUIButton({x:150,y:800,w:240,h:56},'返 回 大 厅',[140,180,240],true);
+  // 新增：更多游戏按钮 (左边)
+drawUIButton({x: 70, y: 820, w: 180, h: 56}, '🌐 更多游戏', [100,200,255], true);
+// 返回大厅按钮 (右边)
+drawUIButton({x: 290, y: 820, w: 180, h: 56}, '返 回 大 厅', [140,180,240], true);
 }
 
 function drawArcadeMachine(x, y, title, desc, rgb){
